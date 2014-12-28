@@ -1,0 +1,5 @@
+[package]
+
+name = "stunnel"
+version = "0.0.1"
+authors = ["airtrack<airtrack.sk@gmail.com>"]
