@@ -1,3 +1,4 @@
+use std::thread::Thread;
 use std::collections::HashMap;
 use std::io::net::addrinfo::get_host_addresses;
 use std::io::TcpStream;
@@ -27,9 +28,9 @@ pub struct Tunnel;
 impl Copy for Tunnel {}
 impl Tunnel {
     pub fn new(stream: TcpStream) {
-        spawn(move || {
+        Thread::spawn(move || {
             tunnel_core_task(stream);
-        });
+        }).detach();
     }
 }
 
@@ -84,9 +85,9 @@ fn tunnel_port_task(id: i32, rx: Receiver<TunnelPortMsg>, core_tx: Sender<Tunnel
     }
 
     let receiver = stream.clone();
-    spawn(move || {
+    Thread::spawn(move || {
         tunnel_port_recv(id, receiver, core_tx);
-    });
+    }).detach();
 
     loop {
         match rx.recv() {
@@ -160,9 +161,9 @@ fn tunnel_core_task(mut stream: TcpStream) {
     let (core_tx, core_rx) = channel();
     let receiver = stream.clone();
     let core_tx2 = core_tx.clone();
-    spawn(move || {
+    Thread::spawn(move || {
         tunnel_tcp_recv(receiver, core_tx2);
-    });
+    }).detach();
 
     let mut port_map = HashMap::new();
     loop {
@@ -172,9 +173,9 @@ fn tunnel_core_task(mut stream: TcpStream) {
                 port_map.insert(id, tx);
 
                 let core_tx2 = core_tx.clone();
-                spawn(move || {
+                Thread::spawn(move || {
                     tunnel_port_task(id, rx, core_tx2);
-                });
+                }).detach();
             },
             TunnelMsg::ClosePort(id) => {
                 port_map.get(&id).map(|tx| {

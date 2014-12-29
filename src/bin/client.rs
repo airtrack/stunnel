@@ -1,5 +1,6 @@
 extern crate stunnel;
 
+use std::thread::Thread;
 use std::io::{TcpListener, TcpStream};
 use std::io::{Acceptor, Listener};
 use std::io::net::ip::ToSocketAddr;
@@ -26,9 +27,9 @@ fn tunnel_port_write(mut stream: TcpStream, mut write_port: TunnelWritePort,
     }
 
     let sender = stream.clone();
-    spawn(move || {
+    Thread::spawn(move || {
         tunnel_port_read(sender, read_port);
-    });
+    }).detach();
 
     loop {
         let mut buf = Vec::with_capacity(1024);
@@ -91,9 +92,9 @@ fn main() {
             Ok(stream) => {
                 let (write_port, read_port) = tunnel.open_port();
 
-                spawn(move || {
+                Thread::spawn(move || {
                     tunnel_port_write(stream, write_port, read_port);
-                });
+                }).detach();
             },
             Err(_) => {}
         }

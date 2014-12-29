@@ -1,3 +1,4 @@
+use std::thread::Thread;
 use std::collections::HashMap;
 use std::io::TcpStream;
 use std::vec::Vec;
@@ -38,9 +39,9 @@ impl Tunnel {
     pub fn new() -> Tunnel {
         let (tx, rx) = channel();
         let tx2 = tx.clone();
-        spawn(move || {
+        Thread::spawn(move || {
             tunnel_core_task(rx, tx2);
-        });
+        }).detach();
 
         Tunnel { id: 1, core_tx: tx }
     }
@@ -133,9 +134,9 @@ fn tunnel_core_task(core_rx: Receiver<TunnelMsg>, core_tx: Sender<TunnelMsg>) {
     let receiver = stream.clone();
     let core_tx2 = core_tx.clone();
 
-    spawn(move || {
+    Thread::spawn(move || {
         tunnel_tcp_recv(receiver, core_tx2);
-    });
+    }).detach();
 
     let mut port_map = HashMap::new();
     loop {
