@@ -7,13 +7,13 @@ use std::path::BytesContainer;
 use super::protocol::{cs, sc};
 
 enum TunnelMsg {
-    OpenPort(i32),
-    ClosePort(i32),
-    ConnectOk(i32, Vec<u8>),
-    ConnectDN(i32, Vec<u8>, u16),
-    RecvData(u8, i32, Vec<u8>),
-    SendData(i32, Vec<u8>),
-    Shutdown(i32),
+    OpenPort(u32),
+    ClosePort(u32),
+    ConnectOk(u32, Vec<u8>),
+    ConnectDN(u32, Vec<u8>, u16),
+    RecvData(u8, u32, Vec<u8>),
+    SendData(u32, Vec<u8>),
+    Shutdown(u32),
     CloseTunnel,
 }
 
@@ -34,7 +34,7 @@ impl Tunnel {
     }
 }
 
-fn tunnel_port_recv(id: i32, mut stream: TcpStream, core_tx: Sender<TunnelMsg>) {
+fn tunnel_port_recv(id: u32, mut stream: TcpStream, core_tx: Sender<TunnelMsg>) {
     loop {
         let mut buf = Vec::with_capacity(1024);
         unsafe { buf.set_len(1024); }
@@ -52,7 +52,7 @@ fn tunnel_port_recv(id: i32, mut stream: TcpStream, core_tx: Sender<TunnelMsg>) 
     }
 }
 
-fn tunnel_port_task(id: i32, rx: Receiver<TunnelPortMsg>, core_tx: Sender<TunnelMsg>) {
+fn tunnel_port_task(id: u32, rx: Receiver<TunnelPortMsg>, core_tx: Sender<TunnelMsg>) {
     let stream_o = match rx.recv() {
         TunnelPortMsg::Data(cs::CONNECT, buf) => {
             buf.container_as_str().and_then(|addr| TcpStream::connect(addr).ok())
@@ -108,7 +108,7 @@ fn tunnel_tcp_recv(mut stream: TcpStream, core_tx: Sender<TunnelMsg>) {
             Err(_) => break
         };
 
-        let id = match stream.read_be_i32() {
+        let id = match stream.read_be_u32() {
             Ok(id) => id,
             Err(_) => break
         };
@@ -121,12 +121,12 @@ fn tunnel_tcp_recv(mut stream: TcpStream, core_tx: Sender<TunnelMsg>) {
                 core_tx.send(TunnelMsg::ClosePort(id));
             },
             cs::CONNECT_DOMAIN_NAME => {
-                let len = match stream.read_be_uint() {
+                let len = match stream.read_be_u32() {
                     Ok(len) => len,
                     Err(_) => break
                 };
 
-                let domain_name = match stream.read_exact(len - 2) {
+                let domain_name = match stream.read_exact(len as uint - 2) {
                     Ok(domain_name) => domain_name,
                     Err(_) => break
                 };
@@ -139,12 +139,12 @@ fn tunnel_tcp_recv(mut stream: TcpStream, core_tx: Sender<TunnelMsg>) {
                 core_tx.send(TunnelMsg::ConnectDN(id, domain_name, port));
             },
             _ => {
-                let len = match stream.read_be_uint() {
+                let len = match stream.read_be_u32() {
                     Ok(len) => len,
                     Err(_) => break
                 };
 
-                let buf = match stream.read_exact(len) {
+                let buf = match stream.read_exact(len as uint) {
                     Ok(buf) => buf,
                     Err(_) => break
                 };
@@ -186,8 +186,8 @@ fn tunnel_core_task(mut stream: TcpStream) {
             },
             TunnelMsg::ConnectOk(id, buf) => {
                 let _ = stream.write_u8(sc::CONNECT_OK);
-                let _ = stream.write_be_i32(id);
-                let _ = stream.write_be_uint(buf.len());
+                let _ = stream.write_be_u32(id);
+                let _ = stream.write_be_u32(buf.len() as u32);
                 let _ = stream.write(buf.as_slice());
             },
             TunnelMsg::ConnectDN(id, domain_name, port) => {
@@ -202,8 +202,8 @@ fn tunnel_core_task(mut stream: TcpStream) {
             },
             TunnelMsg::SendData(id, buf) => {
                 let _ = stream.write_u8(sc::DATA);
-                let _ = stream.write_be_i32(id);
-                let _ = stream.write_be_uint(buf.len());
+                let _ = stream.write_be_u32(id);
+                let _ = stream.write_be_u32(buf.len() as u32);
                 let _ = stream.write(buf.as_slice());
             },
             TunnelMsg::Shutdown(id) => {
@@ -211,7 +211,7 @@ fn tunnel_core_task(mut stream: TcpStream) {
                     let _ = tx.send_opt(TunnelPortMsg::ClosePort);
 
                     let _ = stream.write_u8(sc::SHUTDOWN);
-                    let _ = stream.write_be_i32(id);
+                    let _ = stream.write_be_u32(id);
                 });
 
                 port_map.remove(&id);

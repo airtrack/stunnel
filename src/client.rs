@@ -5,14 +5,14 @@ use std::vec::Vec;
 use super::protocol::{cs, sc};
 
 enum TunnelMsg {
-    OpenPort(i32, Sender<TunnelPortMsg>),
-    ClosePort(i32),
-    Shutdown(i32),
-    Connect(i32, Vec<u8>),
-    ConnectDN(i32, Vec<u8>, u16),
-    ConnectOk(i32, Vec<u8>),
-    RecvData(i32, Vec<u8>),
-    SendData(i32, Vec<u8>),
+    OpenPort(u32, Sender<TunnelPortMsg>),
+    ClosePort(u32),
+    Shutdown(u32),
+    Connect(u32, Vec<u8>),
+    ConnectDN(u32, Vec<u8>, u16),
+    ConnectOk(u32, Vec<u8>),
+    RecvData(u32, Vec<u8>),
+    SendData(u32, Vec<u8>),
 }
 
 pub enum TunnelPortMsg {
@@ -22,12 +22,12 @@ pub enum TunnelPortMsg {
 }
 
 pub struct Tunnel {
-    id: i32,
+    id: u32,
     core_tx: Sender<TunnelMsg>,
 }
 
 pub struct TunnelWritePort {
-    id: i32,
+    id: u32,
     tx: Sender<TunnelMsg>,
 }
 
@@ -89,19 +89,19 @@ fn tunnel_tcp_recv(mut stream: TcpStream, core_tx: Sender<TunnelMsg>) {
             Err(_) => panic!("read tcp tunnel error")
         };
 
-        let id = match stream.read_be_i32() {
+        let id = match stream.read_be_u32() {
             Ok(id) => id,
             Err(_) => panic!("read tcp tunnel error")
         };
 
         match op {
             sc::CONNECT_OK => {
-                let len = match stream.read_be_uint() {
+                let len = match stream.read_be_u32() {
                     Ok(len) => len,
                     Err(_) => panic!("read tcp tunnel error")
                 };
 
-                match stream.read_exact(len) {
+                match stream.read_exact(len as uint) {
                     Ok(buf) => {
                         core_tx.send(TunnelMsg::ConnectOk(id, buf));
                     },
@@ -112,12 +112,12 @@ fn tunnel_tcp_recv(mut stream: TcpStream, core_tx: Sender<TunnelMsg>) {
                 core_tx.send(TunnelMsg::Shutdown(id));
             },
             sc::DATA => {
-                let len = match stream.read_be_uint() {
+                let len = match stream.read_be_u32() {
                     Ok(len) => len,
                     Err(_) => panic!("read tcp tunnel error")
                 };
 
-                match stream.read_exact(len) {
+                match stream.read_exact(len as uint) {
                     Ok(buf) => {
                         core_tx.send(TunnelMsg::RecvData(id, buf));
                     },
@@ -145,14 +145,14 @@ fn tunnel_core_task(core_rx: Receiver<TunnelMsg>, core_tx: Sender<TunnelMsg>) {
                 port_map.insert(id, tx);
 
                 let _ = stream.write_u8(cs::OPEN_PORT);
-                let _ = stream.write_be_i32(id);
+                let _ = stream.write_be_u32(id);
             },
             TunnelMsg::ClosePort(id) => {
                 port_map.get(&id).map(|tx| {
                     let _ = tx.send_opt(TunnelPortMsg::ClosePort);
 
                     let _ = stream.write_u8(cs::CLOSE_PORT);
-                    let _ = stream.write_be_i32(id);
+                    let _ = stream.write_be_u32(id);
                 });
 
                 port_map.remove(&id);
@@ -166,14 +166,14 @@ fn tunnel_core_task(core_rx: Receiver<TunnelMsg>, core_tx: Sender<TunnelMsg>) {
             },
             TunnelMsg::Connect(id, buf) => {
                 let _ = stream.write_u8(cs::CONNECT);
-                let _ = stream.write_be_i32(id);
-                let _ = stream.write_be_uint(buf.len());
+                let _ = stream.write_be_u32(id);
+                let _ = stream.write_be_u32(buf.len() as u32);
                 let _ = stream.write(buf.as_slice());
             },
             TunnelMsg::ConnectDN(id, buf, port) => {
                 let _ = stream.write_u8(cs::CONNECT_DOMAIN_NAME);
-                let _ = stream.write_be_i32(id);
-                let _ = stream.write_be_uint(buf.len() + 2);
+                let _ = stream.write_be_u32(id);
+                let _ = stream.write_be_u32(buf.len() as u32 + 2);
                 let _ = stream.write(buf.as_slice());
                 let _ = stream.write_be_u16(port);
             },
@@ -189,8 +189,8 @@ fn tunnel_core_task(core_rx: Receiver<TunnelMsg>, core_tx: Sender<TunnelMsg>) {
             },
             TunnelMsg::SendData(id, buf) => {
                 let _ = stream.write_u8(cs::DATA);
-                let _ = stream.write_be_i32(id);
-                let _ = stream.write_be_uint(buf.len());
+                let _ = stream.write_be_u32(id);
+                let _ = stream.write_be_u32(buf.len() as u32);
                 let _ = stream.write(buf.as_slice());
             }
         }
