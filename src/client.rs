@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::io::TcpStream;
 use std::vec::Vec;
 use super::protocol::{cs, sc};
+use super::crypto_wrapper::Cryptor;
 
 enum TunnelMsg {
     OpenPort(u32, Sender<TunnelPortMsg>),
@@ -36,11 +37,11 @@ pub struct TunnelReadPort {
 }
 
 impl Tunnel {
-    pub fn new() -> Tunnel {
+    pub fn new(key: Vec<u8>) -> Tunnel {
         let (tx, rx) = channel();
         let tx2 = tx.clone();
         Thread::spawn(move || {
-            tunnel_core_task(rx, tx2);
+            tunnel_core_task(key, rx, tx2);
         }).detach();
 
         Tunnel { id: 1, core_tx: tx }
@@ -82,7 +83,13 @@ impl TunnelReadPort {
     }
 }
 
-fn tunnel_tcp_recv(mut stream: TcpStream, core_tx: Sender<TunnelMsg>) {
+fn tunnel_tcp_recv(key: Vec<u8>, mut stream: TcpStream,
+                   core_tx: Sender<TunnelMsg>) {
+    let mut decryptor = match stream.read_exact(Cryptor::ctr_size()) {
+        Ok(ctr) => Cryptor::with_ctr(key.as_slice(), ctr),
+        Err(_) => panic!("read tcp tunnel error")
+    };
+
     loop {
         let op = match stream.read_u8() {
             Ok(op) => op,
@@ -103,7 +110,8 @@ fn tunnel_tcp_recv(mut stream: TcpStream, core_tx: Sender<TunnelMsg>) {
 
                 match stream.read_exact(len as uint) {
                     Ok(buf) => {
-                        core_tx.send(TunnelMsg::ConnectOk(id, buf));
+                        let data = decryptor.decrypt(buf.as_slice());
+                        core_tx.send(TunnelMsg::ConnectOk(id, data));
                     },
                     Err(_) => panic!("read tcp tunnel error")
                 }
@@ -119,7 +127,8 @@ fn tunnel_tcp_recv(mut stream: TcpStream, core_tx: Sender<TunnelMsg>) {
 
                 match stream.read_exact(len as uint) {
                     Ok(buf) => {
-                        core_tx.send(TunnelMsg::RecvData(id, buf));
+                        let data = decryptor.decrypt(buf.as_slice());
+                        core_tx.send(TunnelMsg::RecvData(id, data));
                     },
                     Err(_) => panic!("read tcp tunnel error")
                 }
@@ -129,14 +138,19 @@ fn tunnel_tcp_recv(mut stream: TcpStream, core_tx: Sender<TunnelMsg>) {
     }
 }
 
-fn tunnel_core_task(core_rx: Receiver<TunnelMsg>, core_tx: Sender<TunnelMsg>) {
+fn tunnel_core_task(key: Vec<u8>, core_rx: Receiver<TunnelMsg>,
+                    core_tx: Sender<TunnelMsg>) {
     let mut stream = TcpStream::connect("127.0.0.1:12345").unwrap();
     let receiver = stream.clone();
     let core_tx2 = core_tx.clone();
+    let key2 = key.clone();
 
     Thread::spawn(move || {
-        tunnel_tcp_recv(receiver, core_tx2);
+        tunnel_tcp_recv(key2, receiver, core_tx2);
     }).detach();
+
+    let mut encryptor = Cryptor::new(key.as_slice());
+    let _ = stream.write(encryptor.ctr_as_slice());
 
     let mut port_map = HashMap::new();
     loop {
@@ -165,16 +179,20 @@ fn tunnel_core_task(core_rx: Receiver<TunnelMsg>, core_tx: Sender<TunnelMsg>) {
                 port_map.remove(&id);
             },
             TunnelMsg::Connect(id, buf) => {
+                let data = encryptor.encrypt(buf.as_slice());
+
                 let _ = stream.write_u8(cs::CONNECT);
                 let _ = stream.write_be_u32(id);
-                let _ = stream.write_be_u32(buf.len() as u32);
-                let _ = stream.write(buf.as_slice());
+                let _ = stream.write_be_u32(data.len() as u32);
+                let _ = stream.write(data.as_slice());
             },
             TunnelMsg::ConnectDN(id, buf, port) => {
+                let data = encryptor.encrypt(buf.as_slice());
+
                 let _ = stream.write_u8(cs::CONNECT_DOMAIN_NAME);
                 let _ = stream.write_be_u32(id);
-                let _ = stream.write_be_u32(buf.len() as u32 + 2);
-                let _ = stream.write(buf.as_slice());
+                let _ = stream.write_be_u32(data.len() as u32 + 2);
+                let _ = stream.write(data.as_slice());
                 let _ = stream.write_be_u16(port);
             },
             TunnelMsg::ConnectOk(id, buf) => {
@@ -188,10 +206,12 @@ fn tunnel_core_task(core_rx: Receiver<TunnelMsg>, core_tx: Sender<TunnelMsg>) {
                 });
             },
             TunnelMsg::SendData(id, buf) => {
+                let data = encryptor.encrypt(buf.as_slice());
+
                 let _ = stream.write_u8(cs::DATA);
                 let _ = stream.write_be_u32(id);
-                let _ = stream.write_be_u32(buf.len() as u32);
-                let _ = stream.write(buf.as_slice());
+                let _ = stream.write_be_u32(data.len() as u32);
+                let _ = stream.write(data.as_slice());
             }
         }
     }

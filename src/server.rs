@@ -5,6 +5,7 @@ use std::io::TcpStream;
 use std::vec::Vec;
 use std::path::BytesContainer;
 use super::protocol::{cs, sc};
+use super::crypto_wrapper::Cryptor;
 
 enum TunnelMsg {
     OpenPort(u32),
@@ -27,9 +28,9 @@ pub struct Tunnel;
 
 impl Copy for Tunnel {}
 impl Tunnel {
-    pub fn new(stream: TcpStream) {
+    pub fn new(key: Vec<u8>, stream: TcpStream) {
         Thread::spawn(move || {
-            tunnel_core_task(stream);
+            tunnel_core_task(key, stream);
         }).detach();
     }
 }
@@ -101,7 +102,13 @@ fn tunnel_port_task(id: u32, rx: Receiver<TunnelPortMsg>, core_tx: Sender<Tunnel
     let _ = stream.close_read();
 }
 
-fn tunnel_tcp_recv(mut stream: TcpStream, core_tx: Sender<TunnelMsg>) {
+fn tunnel_tcp_recv(key: Vec<u8>, mut stream: TcpStream,
+                   core_tx: Sender<TunnelMsg>) {
+    let mut decryptor = match stream.read_exact(Cryptor::ctr_size()) {
+        Ok(ctr) => Cryptor::with_ctr(key.as_slice(), ctr),
+        Err(_) => return core_tx.send(TunnelMsg::CloseTunnel)
+    };
+
     loop {
         let op = match stream.read_byte() {
             Ok(op) => op,
@@ -127,7 +134,7 @@ fn tunnel_tcp_recv(mut stream: TcpStream, core_tx: Sender<TunnelMsg>) {
                 };
 
                 let domain_name = match stream.read_exact(len as uint - 2) {
-                    Ok(domain_name) => domain_name,
+                    Ok(buf) => decryptor.decrypt(buf.as_slice()),
                     Err(_) => break
                 };
 
@@ -145,7 +152,7 @@ fn tunnel_tcp_recv(mut stream: TcpStream, core_tx: Sender<TunnelMsg>) {
                 };
 
                 let buf = match stream.read_exact(len as uint) {
-                    Ok(buf) => buf,
+                    Ok(buf) => decryptor.decrypt(buf.as_slice()),
                     Err(_) => break
                 };
 
@@ -157,13 +164,18 @@ fn tunnel_tcp_recv(mut stream: TcpStream, core_tx: Sender<TunnelMsg>) {
     core_tx.send(TunnelMsg::CloseTunnel);
 }
 
-fn tunnel_core_task(mut stream: TcpStream) {
+fn tunnel_core_task(key: Vec<u8>, mut stream: TcpStream) {
     let (core_tx, core_rx) = channel();
     let receiver = stream.clone();
     let core_tx2 = core_tx.clone();
+    let key2 = key.clone();
+
     Thread::spawn(move || {
-        tunnel_tcp_recv(receiver, core_tx2);
+        tunnel_tcp_recv(key2, receiver, core_tx2);
     }).detach();
+
+    let mut encryptor = Cryptor::new(key.as_slice());
+    let _ = stream.write(encryptor.ctr_as_slice());
 
     let mut port_map = HashMap::new();
     loop {
@@ -185,10 +197,12 @@ fn tunnel_core_task(mut stream: TcpStream) {
                 port_map.remove(&id);
             },
             TunnelMsg::ConnectOk(id, buf) => {
+                let data = encryptor.encrypt(buf.as_slice());
+
                 let _ = stream.write_u8(sc::CONNECT_OK);
                 let _ = stream.write_be_u32(id);
-                let _ = stream.write_be_u32(buf.len() as u32);
-                let _ = stream.write(buf.as_slice());
+                let _ = stream.write_be_u32(data.len() as u32);
+                let _ = stream.write(data.as_slice());
             },
             TunnelMsg::ConnectDN(id, domain_name, port) => {
                 port_map.get(&id).map(move |tx| {
@@ -201,10 +215,12 @@ fn tunnel_core_task(mut stream: TcpStream) {
                 });
             },
             TunnelMsg::SendData(id, buf) => {
+                let data = encryptor.encrypt(buf.as_slice());
+
                 let _ = stream.write_u8(sc::DATA);
                 let _ = stream.write_be_u32(id);
-                let _ = stream.write_be_u32(buf.len() as u32);
-                let _ = stream.write(buf.as_slice());
+                let _ = stream.write_be_u32(data.len() as u32);
+                let _ = stream.write(data.as_slice());
             },
             TunnelMsg::Shutdown(id) => {
                 port_map.get(&id).map(|tx| {

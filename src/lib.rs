@@ -1,6 +1,9 @@
+extern crate crypto;
+
 pub mod client;
 pub mod server;
 pub mod socks5;
+pub mod crypto_wrapper;
 
 mod protocol {
     pub mod cs {

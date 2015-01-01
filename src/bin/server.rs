@@ -11,7 +11,7 @@ fn main() {
     for stream in acceptor.incoming() {
         match stream {
             Ok(stream) => {
-                Tunnel::new(stream);
+                Tunnel::new(vec![1, 2, 3, 4], stream);
             },
             Err(_) => {}
         }

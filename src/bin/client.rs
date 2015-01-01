@@ -86,7 +86,7 @@ fn main() {
     let listener = TcpListener::bind("127.0.0.1:1080");
     let mut acceptor = listener.listen();
 
-    let mut tunnel = Tunnel::new();
+    let mut tunnel = Tunnel::new(vec![1, 2, 3, 4]);
     for stream in acceptor.incoming() {
         match stream {
             Ok(stream) => {
