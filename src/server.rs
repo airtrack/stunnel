@@ -4,7 +4,7 @@ use std::io::net::addrinfo::get_host_addresses;
 use std::io::TcpStream;
 use std::vec::Vec;
 use std::path::BytesContainer;
-use super::protocol::{cs, sc};
+use super::protocol::{VERIFY_DATA, cs, sc};
 use super::crypto_wrapper::Cryptor;
 
 enum TunnelMsg {
@@ -108,6 +108,16 @@ fn tunnel_tcp_recv(key: Vec<u8>, mut stream: TcpStream,
         Ok(ctr) => Cryptor::with_ctr(key.as_slice(), ctr),
         Err(_) => return core_tx.send(TunnelMsg::CloseTunnel)
     };
+
+    match stream.read_exact(VERIFY_DATA.len()) {
+        Ok(buf) => {
+            let data = decryptor.decrypt(buf.as_slice());
+            if data.as_slice() != VERIFY_DATA.as_slice() {
+                return core_tx.send(TunnelMsg::CloseTunnel)
+            }
+        },
+        Err(_) => return core_tx.send(TunnelMsg::CloseTunnel)
+    }
 
     loop {
         let op = match stream.read_byte() {

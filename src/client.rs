@@ -2,7 +2,7 @@ use std::thread::Thread;
 use std::collections::HashMap;
 use std::io::TcpStream;
 use std::vec::Vec;
-use super::protocol::{cs, sc};
+use super::protocol::{VERIFY_DATA, cs, sc};
 use super::crypto_wrapper::Cryptor;
 
 enum TunnelMsg {
@@ -152,6 +152,7 @@ fn tunnel_core_task(server_addr: String, key: Vec<u8>,
 
     let mut encryptor = Cryptor::new(key.as_slice());
     let _ = stream.write(encryptor.ctr_as_slice());
+    let _ = stream.write(encryptor.encrypt(&VERIFY_DATA).as_slice());
 
     let mut port_map = HashMap::new();
     loop {

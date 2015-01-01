@@ -6,6 +6,9 @@ pub mod socks5;
 pub mod crypto_wrapper;
 
 mod protocol {
+    pub const VERIFY_DATA: [u8, ..8] =
+        [0xF0u8, 0xEF, 0xE, 0x2, 0xAE, 0xBC, 0x8C, 0x78];
+
     pub mod cs {
         pub const OPEN_PORT: u8 = 1;
         pub const CLOSE_PORT: u8 = 2;
