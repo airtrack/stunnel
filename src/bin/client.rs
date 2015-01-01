@@ -44,7 +44,7 @@ fn tunnel_port_write(mut stream: TcpStream, mut write_port: TunnelWritePort,
             },
             Err(_) => {
                 write_port.close();
-                break;
+                break
             }
         }
     }
