@@ -37,11 +37,12 @@ pub struct TunnelReadPort {
 }
 
 impl Tunnel {
-    pub fn new(key: Vec<u8>) -> Tunnel {
+    pub fn new(server_addr: String, key: Vec<u8>) -> Tunnel {
         let (tx, rx) = channel();
         let tx2 = tx.clone();
+
         Thread::spawn(move || {
-            tunnel_core_task(key, rx, tx2);
+            tunnel_core_task(server_addr, key, rx, tx2);
         }).detach();
 
         Tunnel { id: 1, core_tx: tx }
@@ -138,9 +139,9 @@ fn tunnel_tcp_recv(key: Vec<u8>, mut stream: TcpStream,
     }
 }
 
-fn tunnel_core_task(key: Vec<u8>, core_rx: Receiver<TunnelMsg>,
-                    core_tx: Sender<TunnelMsg>) {
-    let mut stream = TcpStream::connect("127.0.0.1:12345").unwrap();
+fn tunnel_core_task(server_addr: String, key: Vec<u8>,
+                    core_rx: Receiver<TunnelMsg>, core_tx: Sender<TunnelMsg>) {
+    let mut stream = TcpStream::connect(server_addr.as_slice()).unwrap();
     let receiver = stream.clone();
     let core_tx2 = core_tx.clone();
     let key2 = key.clone();

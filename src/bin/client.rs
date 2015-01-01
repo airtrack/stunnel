@@ -1,5 +1,6 @@
 extern crate stunnel;
 
+use std::os;
 use std::thread::Thread;
 use std::io::{TcpListener, TcpStream};
 use std::io::{Acceptor, Listener};
@@ -8,6 +9,7 @@ use std::vec::Vec;
 use std::path::BytesContainer;
 use stunnel::client::{Tunnel, TunnelWritePort, TunnelReadPort, TunnelPortMsg};
 use stunnel::socks5::{ConnectDest, get_connect_dest, reply_connect_success, reply_failure};
+use stunnel::crypto_wrapper::Cryptor;
 
 fn tunnel_port_write(mut stream: TcpStream, mut write_port: TunnelWritePort,
                      read_port: TunnelReadPort) {
@@ -83,10 +85,26 @@ fn tunnel_port_read(mut stream: TcpStream, read_port: TunnelReadPort) {
 }
 
 fn main() {
+    let args = os::args();
+    if args.len() != 3 {
+        println!("usage: {} server-address key", args[0]);
+        return
+    }
+
+    let server_addr = args[1].clone();
+    let key = args[2].clone().into_bytes();
+    let (min, max) = Cryptor::key_size_range();
+
+    if key.len() < min || key.len() > max {
+        println!("key length must in range [{}, {}]", min, max);
+        return
+    }
+
+    let mut tunnel = Tunnel::new(server_addr, key);
+
     let listener = TcpListener::bind("127.0.0.1:1080");
     let mut acceptor = listener.listen();
 
-    let mut tunnel = Tunnel::new(vec![1, 2, 3, 4]);
     for stream in acceptor.incoming() {
         match stream {
             Ok(stream) => {
