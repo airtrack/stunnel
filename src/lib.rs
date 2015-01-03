@@ -1,4 +1,27 @@
+#![feature(macro_rules)]
+
 extern crate crypto;
+
+macro_rules! on_error {
+    ($op: expr, $err_op: expr) => ({
+        ($op).err().map(|_| $err_op)
+    });
+}
+
+macro_rules! ok_or_break {
+    ($op: expr) => ({
+        match $op {
+            Ok(v) => v,
+            Err(_) => break
+        }
+    });
+    ($op: expr, $on_ok: expr) => ({
+        match $op {
+            Ok(v) => $on_ok(v),
+            Err(_) => break
+        }
+    });
+}
 
 pub mod client;
 pub mod server;
