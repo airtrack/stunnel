@@ -247,6 +247,6 @@ fn tunnel_core_task(key: Vec<u8>, mut stream: TcpStream) {
     }
 
     for (_, tx) in port_map.iter() {
-        tx.send(TunnelPortMsg::ClosePort);
+        let _ = tx.send_opt(TunnelPortMsg::ClosePort);
     }
 }

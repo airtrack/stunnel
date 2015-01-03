@@ -14,6 +14,7 @@ enum TunnelMsg {
     ConnectOk(u32, Vec<u8>),
     RecvData(u32, Vec<u8>),
     SendData(u32, Vec<u8>),
+    CloseTunnel,
 }
 
 pub enum TunnelPortMsg {
@@ -88,25 +89,25 @@ fn tunnel_tcp_recv(key: Vec<u8>, mut stream: TcpStream,
                    core_tx: Sender<TunnelMsg>) {
     let mut decryptor = match stream.read_exact(Cryptor::ctr_size()) {
         Ok(ctr) => Cryptor::with_ctr(key.as_slice(), ctr),
-        Err(_) => panic!("read tcp tunnel error")
+        Err(_) => return core_tx.send(TunnelMsg::CloseTunnel)
     };
 
     loop {
         let op = match stream.read_u8() {
             Ok(op) => op,
-            Err(_) => panic!("read tcp tunnel error")
+            Err(_) => break
         };
 
         let id = match stream.read_be_u32() {
             Ok(id) => id,
-            Err(_) => panic!("read tcp tunnel error")
+            Err(_) => break
         };
 
         match op {
             sc::CONNECT_OK => {
                 let len = match stream.read_be_u32() {
                     Ok(len) => len,
-                    Err(_) => panic!("read tcp tunnel error")
+                    Err(_) => break
                 };
 
                 match stream.read_exact(len as uint) {
@@ -114,7 +115,7 @@ fn tunnel_tcp_recv(key: Vec<u8>, mut stream: TcpStream,
                         let data = decryptor.decrypt(buf.as_slice());
                         core_tx.send(TunnelMsg::ConnectOk(id, data));
                     },
-                    Err(_) => panic!("read tcp tunnel error")
+                    Err(_) => break
                 }
             },
             sc::SHUTDOWN => {
@@ -123,7 +124,7 @@ fn tunnel_tcp_recv(key: Vec<u8>, mut stream: TcpStream,
             sc::DATA => {
                 let len = match stream.read_be_u32() {
                     Ok(len) => len,
-                    Err(_) => panic!("read tcp tunnel error")
+                    Err(_) => break
                 };
 
                 match stream.read_exact(len as uint) {
@@ -131,12 +132,14 @@ fn tunnel_tcp_recv(key: Vec<u8>, mut stream: TcpStream,
                         let data = decryptor.decrypt(buf.as_slice());
                         core_tx.send(TunnelMsg::RecvData(id, data));
                     },
-                    Err(_) => panic!("read tcp tunnel error")
+                    Err(_) => break
                 }
             },
-            _ => panic!("unknown op")
+            _ => break
         }
     }
+
+    core_tx.send(TunnelMsg::CloseTunnel);
 }
 
 fn tunnel_core_task(server_addr: String, key: Vec<u8>,
@@ -214,7 +217,16 @@ fn tunnel_core_task(server_addr: String, key: Vec<u8>,
                 let _ = stream.write_be_u32(id);
                 let _ = stream.write_be_u32(data.len() as u32);
                 let _ = stream.write(data.as_slice());
-            }
+            },
+            TunnelMsg::CloseTunnel => break
         }
     }
+
+    for (_, tx) in port_map.iter() {
+        let _ = tx.send_opt(TunnelPortMsg::ClosePort);
+    }
+
+    Thread::spawn(move || {
+        tunnel_core_task(server_addr, key, core_rx, core_tx);
+    }).detach();
 }
