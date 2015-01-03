@@ -15,12 +15,6 @@ macro_rules! ok_or_break {
             Err(_) => break
         }
     });
-    ($op: expr, $on_ok: expr) => ({
-        match $op {
-            Ok(v) => $on_ok(v),
-            Err(_) => break
-        }
-    });
 }
 
 pub mod client;
