@@ -4,8 +4,8 @@ extern crate crypto;
 extern crate time;
 
 macro_rules! on_error {
-    ($op: expr, $err_op: expr) => ({
-        ($op).err().map(|_| $err_op)
+    ($err_op: expr, $($op: expr),*) => ({
+        $(($op).err().map(|_| $err_op);)*
     });
 }
 

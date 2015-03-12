@@ -98,7 +98,8 @@ fn tunnel_port_task(id: u32, rx: Receiver<TunnelPortMsg>, core_tx: Sender<Tunnel
     loop {
         match rx.recv() {
             TunnelPortMsg::Data(cs::DATA, buf) => {
-                on_error!(stream.write(buf.as_slice()), stream.close_read());
+                on_error!(stream.close_read(),
+                    stream.write(buf.as_slice()));
             },
             _ => break
         }
@@ -177,7 +178,8 @@ fn tunnel_core_task(key: Vec<u8>, mut stream: TcpStream) {
     }).detach();
 
     let mut encryptor = Cryptor::new(key.as_slice());
-    on_error!(stream.write(encryptor.ctr_as_slice()), stream.close_read());
+    on_error!(stream.close_read(),
+        stream.write(encryptor.ctr_as_slice()));
 
     let mut timer = Timer::new().unwrap();
     let heartbeat = timer.periodic(Duration::seconds(HEARTBEAT_INTERVAL));
@@ -194,7 +196,8 @@ fn tunnel_core_task(key: Vec<u8>, mut stream: TcpStream) {
             msg = core_rx.recv() => match msg {
                 TunnelMsg::Heartbeat => {
                     alive_time = time::get_time();
-                    on_error!(stream.write_u8(sc::HEARTBEAT_RSP), stream.close_read());
+                    on_error!(stream.close_read(),
+                        stream.write_u8(sc::HEARTBEAT_RSP));
                 },
                 TunnelMsg::OpenPort(id) => {
                     let (tx, rx) = channel();
@@ -216,8 +219,9 @@ fn tunnel_core_task(key: Vec<u8>, mut stream: TcpStream) {
                     port_map.get(&id).map(|tx| {
                         let _ = tx.send_opt(TunnelPortMsg::ClosePort);
 
-                        on_error!(stream.write_u8(sc::SHUTDOWN), stream.close_read());
-                        on_error!(stream.write_be_u32(id), stream.close_read());
+                        on_error!(stream.close_read(),
+                            stream.write_u8(sc::SHUTDOWN),
+                            stream.write_be_u32(id));
                     });
 
                     port_map.remove(&id);
@@ -225,10 +229,11 @@ fn tunnel_core_task(key: Vec<u8>, mut stream: TcpStream) {
                 TunnelMsg::ConnectOk(id, buf) => {
                     let data = encryptor.encrypt(buf.as_slice());
 
-                    on_error!(stream.write_u8(sc::CONNECT_OK), stream.close_read());
-                    on_error!(stream.write_be_u32(id), stream.close_read());
-                    on_error!(stream.write_be_u32(data.len() as u32), stream.close_read());
-                    on_error!(stream.write(data.as_slice()), stream.close_read());
+                    on_error!(stream.close_read(),
+                        stream.write_u8(sc::CONNECT_OK),
+                        stream.write_be_u32(id),
+                        stream.write_be_u32(data.len() as u32),
+                        stream.write(data.as_slice()));
                 },
                 TunnelMsg::ConnectDN(id, domain_name, port) => {
                     port_map.get(&id).map(move |tx| {
@@ -243,10 +248,11 @@ fn tunnel_core_task(key: Vec<u8>, mut stream: TcpStream) {
                 TunnelMsg::SendData(id, buf) => {
                     let data = encryptor.encrypt(buf.as_slice());
 
-                    on_error!(stream.write_u8(sc::DATA), stream.close_read());
-                    on_error!(stream.write_be_u32(id), stream.close_read());
-                    on_error!(stream.write_be_u32(data.len() as u32), stream.close_read());
-                    on_error!(stream.write(data.as_slice()), stream.close_read());
+                    on_error!(stream.close_read(),
+                        stream.write_u8(sc::DATA),
+                        stream.write_be_u32(id),
+                        stream.write_be_u32(data.len() as u32),
+                        stream.write(data.as_slice()));
                 },
                 TunnelMsg::CloseTunnel => break
             }
