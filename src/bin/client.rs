@@ -1,70 +1,78 @@
 extern crate stunnel;
 
-use std::os;
-use std::thread::Thread;
-use std::io::{TcpListener, TcpStream};
-use std::io::{Acceptor, Listener};
-use std::io::net::ip::ToSocketAddr;
+use std::env;
+use std::thread;
+use std::io::Write;
 use std::vec::Vec;
-use std::path::BytesContainer;
-use stunnel::client::{Tunnel, TunnelWritePort, TunnelReadPort, TunnelPortMsg};
-use stunnel::socks5::{ConnectDest, get_connect_dest, reply_connect_success, reply_failure};
-use stunnel::crypto_wrapper::Cryptor;
+use std::net::TcpListener;
+use std::net::TcpStream;
+use std::net::ToSocketAddrs;
+use std::str::from_utf8;
+use stunnel::tcp::Tcp;
+use stunnel::cryptor::Cryptor;
+use stunnel::client::{
+    Tunnel, TunnelWritePort,
+    TunnelReadPort, TunnelPortMsg
+};
+use stunnel::socks5::{
+    ConnectDest, get_connect_dest,
+    reply_connect_success, reply_failure
+};
 
-fn tunnel_port_write(mut stream: TcpStream, mut write_port: TunnelWritePort,
+fn tunnel_port_write(s: TcpStream, mut write_port: TunnelWritePort,
                      read_port: TunnelReadPort) {
-    match get_connect_dest(stream.clone()) {
+    let mut stream = Tcp::new(s.try_clone().unwrap());
+
+    match get_connect_dest(&mut stream) {
         ConnectDest::Addr(addr) => {
             let mut buf = Vec::new();
             let _ = write!(&mut buf, "{}", addr);
             write_port.connect(buf);
         },
+
         ConnectDest::DomainName(domain_name, port) => {
             write_port.connect_domain_name(domain_name, port);
         },
+
         _ => {
             write_port.close();
             return
         }
     }
 
-    let sender = stream.clone();
-    Thread::spawn(move || {
-        tunnel_port_read(sender, read_port);
-    }).detach();
+    thread::spawn(move || {
+        tunnel_port_read(s, read_port);
+    });
 
     loop {
-        let mut buf = Vec::with_capacity(1024);
-        unsafe { buf.set_len(1024); }
-
-        match stream.read(buf.as_mut_slice()) {
-            Ok(len) => {
-                unsafe { buf.set_len(len); }
-                write_port.write(buf);
-            },
-            Err(_) => {
-                write_port.close();
-                break
-            }
+        let buf = stream.read_at_most(10240);
+        if buf.len() == 0 {
+            write_port.close();
+            break
+        } else {
+            write_port.write(buf);
         }
     }
+
+    stream.shutdown();
 }
 
-fn tunnel_port_read(mut stream: TcpStream, read_port: TunnelReadPort) {
+fn tunnel_port_read(s: TcpStream, read_port: TunnelReadPort) {
     let addr = match read_port.read() {
         TunnelPortMsg::ConnectOk(buf) => {
-            buf.container_as_str().and_then(|addr| addr.to_socket_addr().ok())
+            from_utf8(&buf[..]).unwrap().to_socket_addrs().unwrap().nth(0)
         },
+
         _ => None
     };
 
+    let mut stream = Tcp::new(s);
     match addr {
         Some(addr) => {
-            reply_connect_success(stream.clone(), addr);
+            if !reply_connect_success(&mut stream, addr) { return }
         },
         None => {
-            reply_failure(stream.clone());
-            let _ = stream.close_read();
+            reply_failure(&mut stream);
             return
         }
     }
@@ -75,17 +83,14 @@ fn tunnel_port_read(mut stream: TcpStream, read_port: TunnelReadPort) {
             _ => break
         };
 
-        match stream.write(buf.as_slice()) {
-            Ok(_) => {},
-            Err(_) => break
-        }
+        if !stream.write(&buf[..]) { break }
     }
 
-    let _ = stream.close_read();
+    stream.shutdown();
 }
 
 fn main() {
-    let args = os::args();
+    let args: Vec<_> = env::args().collect();
     if args.len() != 3 {
         println!("usage: {} server-address key", args[0]);
         return
@@ -101,19 +106,17 @@ fn main() {
     }
 
     let mut tunnel = Tunnel::new(server_addr, key);
+    let listener = TcpListener::bind("127.0.0.1:1080").unwrap();
 
-    let listener = TcpListener::bind("127.0.0.1:1080");
-    let mut acceptor = listener.listen();
-
-    for stream in acceptor.incoming() {
+    for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let (write_port, read_port) = tunnel.open_port();
-
-                Thread::spawn(move || {
+                thread::spawn(move || {
                     tunnel_port_write(stream, write_port, read_port);
-                }).detach();
+                });
             },
+
             Err(_) => {}
         }
     }

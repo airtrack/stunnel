@@ -1,33 +1,23 @@
-#![feature(macro_rules)]
+#![feature(ip_addr)]
+#![feature(std_misc)]
+#![feature(lookup_host)]
 
 extern crate crypto;
 extern crate time;
+extern crate rand;
 
-macro_rules! on_error {
-    ($err_op: expr, $($op: expr),*) => ({
-        $(($op).err().map(|_| $err_op);)*
-    });
-}
-
-macro_rules! ok_or_break {
-    ($op: expr) => ({
-        match $op {
-            Ok(v) => v,
-            Err(_) => break
-        }
-    });
-}
-
+pub mod tcp;
+pub mod timer;
 pub mod client;
 pub mod server;
 pub mod socks5;
-pub mod crypto_wrapper;
+pub mod cryptor;
 
 mod protocol {
-    pub const VERIFY_DATA: [u8, ..8] =
+    pub const VERIFY_DATA: [u8; 8] =
         [0xF0u8, 0xEF, 0xE, 0x2, 0xAE, 0xBC, 0x8C, 0x78];
-    pub const HEARTBEAT_INTERVAL: i64 = 2;
-    pub const ALIVE_TIMEOUT_TIME: i64 = 8;
+    pub const HEARTBEAT_INTERVAL_MS: u32 = 2000;
+    pub const ALIVE_TIMEOUT_TIME_MS: i64 = 12000;
 
     pub mod cs {
         pub const OPEN_PORT: u8 = 1;

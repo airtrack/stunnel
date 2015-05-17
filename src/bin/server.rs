@@ -1,13 +1,12 @@
 extern crate stunnel;
 
-use std::os;
-use std::io::TcpListener;
-use std::io::{Acceptor, Listener};
+use std::env;
+use std::net::TcpListener;
 use stunnel::server::Tunnel;
-use stunnel::crypto_wrapper::Cryptor;
+use stunnel::cryptor::Cryptor;
 
 fn main() {
-    let args = os::args();
+    let args: Vec<_> = env::args().collect();
     if args.len() != 3 {
         println!("usage: {} listen-address key", args[0]);
         return
@@ -22,10 +21,9 @@ fn main() {
         return
     }
 
-    let listener = TcpListener::bind(listen_addr.as_slice());
-    let mut acceptor = listener.listen();
+    let listener = TcpListener::bind(&listen_addr[..]).unwrap();
 
-    for stream in acceptor.incoming() {
+    for stream in listener.incoming() {
         let key2 = key.clone();
         match stream {
             Ok(stream) => {

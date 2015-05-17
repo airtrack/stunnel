@@ -1,6 +1,5 @@
-use std::io::TcpStream;
-use std::io::net::ip::{IpAddr, SocketAddr};
-use std::iter::IteratorExt;
+use super::tcp::Tcp;
+use std::net::{Ipv4Addr, SocketAddrV4, SocketAddr};
 
 const VER: u8 = 5;
 const METHOD_NO_AUTH: u8 = 0;
@@ -21,51 +20,49 @@ pub enum ConnectDest {
     Unknown,
 }
 
-fn select_method(mut stream: TcpStream) -> u8 {
+fn select_method(stream: &mut Tcp) -> u8 {
     match stream.read_u8() {
-        Ok(VER) => {},
+        Some(VER) => {},
         _ => return METHOD_NO_ACCEPT
     }
 
     let method_num = match stream.read_u8() {
-        Ok(method_num) => method_num as uint,
-        _ => return METHOD_NO_ACCEPT
+        Some(method_num) => method_num,
+        None => return METHOD_NO_ACCEPT
     };
 
     if method_num == 1 {
         match stream.read_u8() {
-            Ok(METHOD_NO_AUTH) => {},
+            Some(METHOD_NO_AUTH) => {},
             _ => return METHOD_NO_ACCEPT
         }
     } else {
-        match stream.read_exact(method_num) {
-            Ok(methods) => {
-                if !methods.into_iter().any(|method| method == METHOD_NO_AUTH) {
-                    return METHOD_NO_ACCEPT
-                }
-            },
-            _ => return METHOD_NO_ACCEPT
+        let methods = stream.read_exact(method_num as usize);
+        if !methods.into_iter().any(|method| method == METHOD_NO_AUTH) {
+            return METHOD_NO_ACCEPT
         }
     }
 
     METHOD_NO_AUTH
 }
 
-fn reply_method(mut stream: TcpStream, method: u8) {
+fn reply_method(stream: &mut Tcp, method: u8) -> bool {
     let reply = [VER, method];
-    let _ = stream.write(reply.as_slice());
+    stream.write(&reply)
 }
 
-pub fn get_connect_dest(mut stream: TcpStream) -> ConnectDest {
-    let method = select_method(stream.clone());
-    reply_method(stream.clone(), method);
+pub fn get_connect_dest(stream: &mut Tcp) -> ConnectDest {
+    let method = select_method(stream);
+    if !reply_method(stream, method) {
+        return ConnectDest::Unknown
+    }
 
     if method != METHOD_NO_AUTH {
         return ConnectDest::Unknown
     }
 
-    let mut buf = [0, ..4];
-    if stream.read_at_least(buf.len(), &mut buf).is_err() {
+    let buf = stream.read_exact(4);
+    if buf.len() == 0 {
         return ConnectDest::Unknown
     }
 
@@ -75,71 +72,83 @@ pub fn get_connect_dest(mut stream: TcpStream) -> ConnectDest {
 
     match buf[3] {
         ATYP_IPV4 => {
-            let mut ipv4 = [0, ..4];
-            if stream.read_at_least(ipv4.len(), &mut ipv4).is_err() {
+            let ipv4 = stream.read_exact(4);
+            if ipv4.len() == 0 {
                 return ConnectDest::Unknown
             }
 
-            match stream.read_be_u16() {
-                Ok(port) => ConnectDest::Addr(SocketAddr {
-                    ip: IpAddr::Ipv4Addr(ipv4[3], ipv4[2], ipv4[1], ipv4[0]),
-                    port: port
-                }),
-                Err(_) => ConnectDest::Unknown
-            }
-        },
-        ATYP_IPV6 => {
-            ConnectDest::Unknown
-        },
-        ATYP_DOMAINNAME => {
-            let domain_name = match stream.read_u8().ok().and_then(
-                |len| stream.read_exact(len as uint).ok()) {
-                Some(buf) => buf,
+            let port = match stream.read_u16() {
+                Some(port) => port,
                 None => return ConnectDest::Unknown
             };
 
-            match stream.read_be_u16() {
-                Ok(port) => ConnectDest::DomainName(domain_name, port),
-                Err(_) => ConnectDest::Unknown
-            }
+            ConnectDest::Addr(
+                SocketAddr::V4(
+                    SocketAddrV4::new(
+                        Ipv4Addr::new(ipv4[3], ipv4[2], ipv4[1], ipv4[0]),
+                        port)))
         },
+
+        ATYP_IPV6 => {
+            ConnectDest::Unknown
+        },
+
+        ATYP_DOMAINNAME => {
+            let len = match stream.read_u8() {
+                Some(len) => len,
+                None => return ConnectDest::Unknown
+            };
+
+            let domain_name = stream.read_exact(len as usize);
+            if domain_name.len() == 0 {
+                return ConnectDest::Unknown
+            }
+
+            let port = match stream.read_u16() {
+                Some(port) => port,
+                None => return ConnectDest::Unknown
+            };
+
+            ConnectDest::DomainName(domain_name, port)
+        },
+
         _ => ConnectDest::Unknown
     }
 }
 
-pub fn reply_connect_success(stream: TcpStream, addr: SocketAddr) {
-    reply_result(stream, addr, REP_SUCCESS);
+pub fn reply_connect_success(stream: &mut Tcp, addr: SocketAddr) -> bool {
+    reply_result(stream, addr, REP_SUCCESS)
 }
 
-pub fn reply_failure(stream: TcpStream) {
-    let addr = SocketAddr {
-        ip: IpAddr::Ipv4Addr(0, 0, 0, 0),
-        port: 0
-    };
-    reply_result(stream, addr, REP_FAILURE);
+pub fn reply_failure(stream: &mut Tcp) -> bool {
+    let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 0));
+    reply_result(stream, addr, REP_FAILURE)
 }
 
-fn reply_result(mut stream: TcpStream, addr: SocketAddr, rep: u8) {
+fn reply_result(stream: &mut Tcp, addr: SocketAddr, rep: u8) -> bool {
     let buf = [VER, rep, RSV];
-    let _ = stream.write(&buf);
+    if !stream.write(&buf) { return false }
 
     match addr {
-        SocketAddr { ip: IpAddr::Ipv4Addr(n1, n2, n3, n4), port } => {
-            let buf = [ATYP_IPV4, n4, n3, n2, n1];
-            let _ = stream.write(&buf);
-            let _ = stream.write_be_u16(port);
+        SocketAddr::V4(ipv4) => {
+            let bytes = ipv4.ip().octets();
+            let buf = [ATYP_IPV4, bytes[3], bytes[2], bytes[1], bytes[0]];
+            if !stream.write(&buf) { return false }
+            if !stream.write_u16(ipv4.port()) { return false }
         },
-        SocketAddr { ip: IpAddr::Ipv6Addr(n1, n2, n3, n4, n5, n6, n7, n8), port } => {
-            let _ = stream.write_u8(ATYP_IPV6);
-            let _ = stream.write_be_u16(n8);
-            let _ = stream.write_be_u16(n7);
-            let _ = stream.write_be_u16(n6);
-            let _ = stream.write_be_u16(n5);
-            let _ = stream.write_be_u16(n4);
-            let _ = stream.write_be_u16(n3);
-            let _ = stream.write_be_u16(n2);
-            let _ = stream.write_be_u16(n1);
-            let _ = stream.write_be_u16(port);
+        SocketAddr::V6(ipv6) => {
+            let segments = ipv6.ip().segments();
+            if !stream.write_u8(ATYP_IPV6) { return false }
+
+            let mut n = segments.len();
+            while n >= 1 {
+                n -= 1;
+                if !stream.write_u16(segments[n]) { return false }
+            }
+
+            if !stream.write_u16(ipv6.port()) { return false }
         }
     }
+
+    true
 }
