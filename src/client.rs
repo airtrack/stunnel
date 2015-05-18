@@ -170,7 +170,17 @@ fn tunnel_tcp_recv(key: Vec<u8>, receiver: TcpStream,
 fn tunnel_core_task(server_addr: String, key: Vec<u8>,
                     core_rx: Receiver<TunnelMsg>,
                     core_tx: Sender<TunnelMsg>) {
-    let sender = TcpStream::connect(&server_addr[..]).unwrap();
+    let sender = match TcpStream::connect(&server_addr[..]) {
+        Ok(sender) => sender,
+        Err(_) => {
+            thread::sleep_ms(1000);
+            thread::spawn(move || {
+                tunnel_core_task(server_addr, key, core_rx, core_tx);
+            });
+            return
+        }
+    };
+
     let receiver = sender.try_clone().unwrap();
     let core_tx2 = core_tx.clone();
     let key2 = key.clone();
