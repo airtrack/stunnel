@@ -2,8 +2,9 @@ use std::net::TcpStream;
 use std::net::Shutdown;
 use std::io::Read;
 use std::io::Write;
+use std::io::Error;
+use std::io::ErrorKind;
 use std::vec::Vec;
-use std::option::Option;
 
 pub struct Tcp {
     stream: TcpStream
@@ -18,131 +19,106 @@ impl Tcp {
         let _ = self.stream.shutdown(Shutdown::Both);
     }
 
-    pub fn read_u8(&mut self) -> Option<u8> {
+    pub fn read_u8(&mut self) -> Result<u8, Error> {
         let mut buf = [0u8];
+        try!(self.read_exact_buf(&mut buf));
 
-        if self.read_exact_buf(&mut buf) {
-            Some(buf[0])
-        } else {
-            None
-        }
+        Ok(buf[0])
     }
 
-    pub fn read_u16(&mut self) -> Option<u16> {
+    pub fn read_u16(&mut self) -> Result<u16, Error> {
         let mut buf = [0u8; 2];
+        try!(self.read_exact_buf(&mut buf));
 
-        if self.read_exact_buf(&mut buf) {
-            let result = unsafe { *(buf.as_ptr() as *const u16) };
-            Some(u16::from_be(result))
-        } else {
-            None
-        }
+        let result = unsafe { *(buf.as_ptr() as *const u16) };
+        Ok(u16::from_be(result))
     }
 
-    pub fn read_u32(&mut self) -> Option<u32> {
+    pub fn read_u32(&mut self) -> Result<u32, Error> {
         let mut buf = [0u8; 4];
+        try!(self.read_exact_buf(&mut buf));
 
-        if self.read_exact_buf(&mut buf) {
-            let result = unsafe { *(buf.as_ptr() as *const u32) };
-            Some(u32::from_be(result))
-        } else {
-            None
-        }
+        let result = unsafe { *(buf.as_ptr() as *const u32) };
+        Ok(u32::from_be(result))
     }
 
-    pub fn read_u64(&mut self) -> Option<u64> {
+    pub fn read_u64(&mut self) -> Result<u64, Error> {
         let mut buf = [0u8; 8];
-        if self.read_exact_buf(&mut buf) {
-            let result = unsafe { *(buf.as_ptr() as *const u64) };
-            Some(u64::from_be(result))
-        } else {
-            None
-        }
+        try!(self.read_exact_buf(&mut buf));
+
+        let result = unsafe { *(buf.as_ptr() as *const u64) };
+        Ok(u64::from_be(result))
     }
 
-    pub fn read_exact(&mut self, size: usize) -> Vec<u8> {
+    pub fn read_exact(&mut self, size: usize) -> Result<Vec<u8>, Error> {
         let mut buf = Vec::with_capacity(size);
         unsafe { buf.set_len(size); }
 
-        if !self.read_exact_buf(&mut buf[..]) {
-            unsafe { buf.set_len(0); }
-        }
-
-        buf
+        try!(self.read_exact_buf(&mut buf[..]));
+        Ok(buf)
     }
 
-    pub fn read_exact_buf(&mut self, buf: &mut [u8]) -> bool {
+    pub fn read_exact_buf(&mut self, buf: &mut [u8]) -> Result<(), Error> {
         let size = buf.len();
 
         let mut length = 0;
         while length < size {
-            match self.stream.read(&mut buf[length..]) {
-                Ok(len) => {
-                    if len == 0 {
-                        return false
-                    } else {
-                        length += len;
-                    }
-                },
-                Err(_) => {
-                    return false
-                }
+            let len = try!(self.stream.read(&mut buf[length..]));
+            if len == 0 {
+                return Err(Error::new(ErrorKind::Other, "eof"));
+            } else {
+                length += len;
             }
         }
 
-        return true
+        Ok(())
     }
 
-    pub fn read_at_most(&mut self, size: usize) -> Vec<u8> {
+    pub fn read_at_most(&mut self, size: usize) -> Result<Vec<u8>, Error> {
         let mut buf = Vec::with_capacity(size);
         unsafe { buf.set_len(size); }
 
-        match self.stream.read(&mut buf[..]) {
-            Ok(len) => {
-                unsafe { buf.set_len(len); }
-            },
-            Err(_) => {
-                unsafe { buf.set_len(0); }
-            }
+        let len = try!(self.stream.read(&mut buf[..]));
+        if len == 0 {
+            return Err(Error::new(ErrorKind::Other, "eof"));
+        } else {
+            unsafe { buf.set_len(len); }
         }
 
-        buf
+        Ok(buf)
     }
 
-    pub fn write_u8(&mut self, v: u8) -> bool {
+    pub fn write_u8(&mut self, v: u8) -> Result<(), Error> {
         let buf = [v];
         self.write(&buf)
     }
 
-    pub fn write_u16(&mut self, v: u16) -> bool {
+    pub fn write_u16(&mut self, v: u16) -> Result<(), Error> {
         let buf = [0u8; 2];
         unsafe { *(buf.as_ptr() as *mut u16) = v.to_be(); }
         self.write(&buf)
     }
 
-    pub fn write_u32(&mut self, v: u32) -> bool {
+    pub fn write_u32(&mut self, v: u32) -> Result<(), Error> {
         let buf = [0u8; 4];
         unsafe { *(buf.as_ptr() as *mut u32) = v.to_be(); }
         self.write(&buf)
     }
 
-    pub fn write_u64(&mut self, v: u64) -> bool {
+    pub fn write_u64(&mut self, v: u64) -> Result<(), Error> {
         let buf = [0u8; 8];
         unsafe { *(buf.as_ptr() as *mut u64) = v.to_be(); }
         self.write(&buf)
     }
 
-    pub fn write(&mut self, buf: &[u8]) -> bool {
+    pub fn write(&mut self, buf: &[u8]) -> Result<(), Error> {
         let size = buf.len();
 
         let mut length = 0;
         while length < size {
-            match self.stream.write(&buf[length..]) {
-                Ok(len) => { length += len; },
-                Err(_) => return false
-            }
+            length += try!(self.stream.write(&buf[length..]));
         }
 
-        return true
+        Ok(())
     }
 }

@@ -5,6 +5,7 @@ use std::thread;
 use std::collections::HashMap;
 use std::net::TcpStream;
 use std::vec::Vec;
+use std::io::Error;
 use time;
 use super::tcp::Tcp;
 use super::timer::Timer;
@@ -101,42 +102,27 @@ impl TunnelReadPort {
 fn tunnel_tcp_recv(key: Vec<u8>, receiver: TcpStream,
                    core_tx: Sender<TunnelMsg>) {
     let mut stream = Tcp::new(receiver);
-    let ctr = stream.read_exact(Cryptor::ctr_size());
-    if ctr.len() == 0 {
-        stream.shutdown();
-        return
-    }
+    let _ = tunnel_recv_loop(&key, &core_tx, &mut stream);
+    stream.shutdown();
+}
 
+fn tunnel_recv_loop(key: &Vec<u8>, core_tx: &Sender<TunnelMsg>,
+                    stream: &mut Tcp) -> Result<(), Error> {
+    let ctr = try!(stream.read_exact(Cryptor::ctr_size()));
     let mut decryptor = Cryptor::with_ctr(&key[..], ctr);
 
     loop {
-        let op = match stream.read_u8() {
-            Some(op) => op,
-            None => break
-        };
-
+        let op = try!(stream.read_u8());
         if op == sc::HEARTBEAT_RSP {
             let _ = core_tx.send(TunnelMsg::Heartbeat);
             continue
         }
 
-        let id = match stream.read_u32() {
-            Some(id) => id,
-            None => break
-        };
-
+        let id = try!(stream.read_u32());
         match op {
             sc::CONNECT_OK => {
-                let len = match stream.read_u32() {
-                    Some(len) => len,
-                    None => break
-                };
-
-                let buf = stream.read_exact(len as usize);
-                if buf.len() == 0 {
-                    break
-                }
-
+                let len = try!(stream.read_u32());
+                let buf = try!(stream.read_exact(len as usize));
                 let data = decryptor.decrypt(&buf[..]);
                 let _ = core_tx.send(TunnelMsg::ConnectOk(id, data));
             },
@@ -146,16 +132,8 @@ fn tunnel_tcp_recv(key: Vec<u8>, receiver: TcpStream,
             },
 
             sc::DATA => {
-                let len = match stream.read_u32() {
-                    Some(len) => len,
-                    None => break
-                };
-
-                let buf = stream.read_exact(len as usize);
-                if buf.len() == 0 {
-                    break
-                }
-
+                let len = try!(stream.read_u32());
+                let buf = try!(stream.read_exact(len as usize));
                 let data = decryptor.decrypt(&buf[..]);
                 let _ = core_tx.send(TunnelMsg::RecvData(id, data));
             },
@@ -164,7 +142,7 @@ fn tunnel_tcp_recv(key: Vec<u8>, receiver: TcpStream,
         }
     }
 
-    stream.shutdown();
+    Ok(())
 }
 
 fn tunnel_core_task(server_addr: String, key: Vec<u8>,
@@ -190,14 +168,31 @@ fn tunnel_core_task(server_addr: String, key: Vec<u8>,
     });
 
     let mut stream = Tcp::new(sender);
+    let mut port_map = HashMap::<u32, Sender<TunnelPortMsg>>::new();
+
+    let _ = tunnel_loop(&key, &core_rx, &mut stream, &mut port_map);
+
+    stream.shutdown();
+    for (_, tx) in port_map.iter() {
+        let _ = tx.send(TunnelPortMsg::ClosePort);
+    }
+
+    thread::spawn(move || {
+        tunnel_core_task(server_addr, key, core_rx, core_tx);
+    });
+}
+
+fn tunnel_loop(key: &Vec<u8>, core_rx: &Receiver<TunnelMsg>, stream: &mut Tcp,
+               port_map: &mut HashMap<u32, Sender<TunnelPortMsg>>
+              ) -> Result<(), Error> {
     let mut encryptor = Cryptor::new(&key[..]);
-    stream.write(encryptor.ctr_as_slice());
-    stream.write(&encryptor.encrypt(&VERIFY_DATA)[..]);
+
+    try!(stream.write(encryptor.ctr_as_slice()));
+    try!(stream.write(&encryptor.encrypt(&VERIFY_DATA)[..]));
 
     let timer = Timer::new(HEARTBEAT_INTERVAL_MS);
     let mut alive_time = time::get_time();
 
-    let mut port_map = HashMap::new();
     loop {
         select! {
             _ = timer.recv() => {
@@ -205,7 +200,7 @@ fn tunnel_core_task(server_addr: String, key: Vec<u8>,
                 if duration.num_milliseconds() > ALIVE_TIMEOUT_TIME_MS {
                     break
                 }
-                if !stream.write_u8(cs::HEARTBEAT) { break }
+                try!(stream.write_u8(cs::HEARTBEAT));
             },
 
             msg = core_rx.recv() => match msg.unwrap() {
@@ -216,21 +211,21 @@ fn tunnel_core_task(server_addr: String, key: Vec<u8>,
                 TunnelMsg::OpenPort(id, tx) => {
                     port_map.insert(id, tx);
 
-                    if !stream.write_u8(cs::OPEN_PORT) { break }
-                    if !stream.write_u32(id) { break }
+                    try!(stream.write_u8(cs::OPEN_PORT));
+                    try!(stream.write_u32(id));
                 },
 
                 TunnelMsg::ClosePort(id) => {
                     let res = port_map.get(&id).map(|tx| {
                         let _ = tx.send(TunnelPortMsg::ClosePort);
 
-                        if !stream.write_u8(cs::CLOSE_PORT) { return false }
-                        if !stream.write_u32(id) { return false }
-                        true
+                        try!(stream.write_u8(cs::CLOSE_PORT));
+                        try!(stream.write_u32(id));
+                        Ok(())
                     });
 
                     match res {
-                        Some(false) => break,
+                        Some(Err(e)) => return Err(e),
                         _ => {}
                     }
 
@@ -248,20 +243,20 @@ fn tunnel_core_task(server_addr: String, key: Vec<u8>,
                 TunnelMsg::Connect(id, buf) => {
                     let data = encryptor.encrypt(&buf[..]);
 
-                    if !stream.write_u8(cs::CONNECT) { break }
-                    if !stream.write_u32(id) { break }
-                    if !stream.write_u32(data.len() as u32) { break }
-                    if !stream.write(&data[..]) { break }
+                    try!(stream.write_u8(cs::CONNECT));
+                    try!(stream.write_u32(id));
+                    try!(stream.write_u32(data.len() as u32));
+                    try!(stream.write(&data[..]));
                 },
 
                 TunnelMsg::ConnectDN(id, buf, port) => {
                     let data = encryptor.encrypt(&buf[..]);
 
-                    if !stream.write_u8(cs::CONNECT_DOMAIN_NAME) { break }
-                    if !stream.write_u32(id) { break }
-                    if !stream.write_u32(data.len() as u32 + 2) { break }
-                    if !stream.write(&data[..]) { break }
-                    if !stream.write_u16(port) { break }
+                    try!(stream.write_u8(cs::CONNECT_DOMAIN_NAME));
+                    try!(stream.write_u32(id));
+                    try!(stream.write_u32(data.len() as u32 + 2));
+                    try!(stream.write(&data[..]));
+                    try!(stream.write_u16(port));
                 },
 
                 TunnelMsg::ConnectOk(id, buf) => {
@@ -279,22 +274,14 @@ fn tunnel_core_task(server_addr: String, key: Vec<u8>,
                 TunnelMsg::SendData(id, buf) => {
                     let data = encryptor.encrypt(&buf[..]);
 
-                    if !stream.write_u8(cs::DATA) { break }
-                    if !stream.write_u32(id) { break }
-                    if !stream.write_u32(data.len() as u32) { break }
-                    if !stream.write(&data[..]) { break }
+                    try!(stream.write_u8(cs::DATA));
+                    try!(stream.write_u32(id));
+                    try!(stream.write_u32(data.len() as u32));
+                    try!(stream.write(&data[..]));
                 }
             }
         }
     }
 
-    stream.shutdown();
-
-    for (_, tx) in port_map.iter() {
-        let _ = tx.send(TunnelPortMsg::ClosePort);
-    }
-
-    thread::spawn(move || {
-        tunnel_core_task(server_addr, key, core_rx, core_tx);
-    });
+    Ok(())
 }

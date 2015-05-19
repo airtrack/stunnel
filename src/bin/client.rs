@@ -3,6 +3,7 @@ extern crate stunnel;
 use std::env;
 use std::thread;
 use std::io::Write;
+use std::io::Error;
 use std::vec::Vec;
 use std::net::TcpListener;
 use std::net::TcpStream;
@@ -41,23 +42,26 @@ fn tunnel_port_write(s: TcpStream, mut write_port: TunnelWritePort,
     }
 
     thread::spawn(move || {
-        tunnel_port_read(s, read_port);
+        let _ = tunnel_port_read(s, read_port);
     });
 
     loop {
-        let buf = stream.read_at_most(10240);
-        if buf.len() == 0 {
-            write_port.close();
-            break
-        } else {
-            write_port.write(buf);
+        match stream.read_at_most(10240) {
+            Ok(buf) => {
+                write_port.write(buf);
+            },
+            Err(_) => {
+                write_port.close();
+                break
+            }
         }
     }
 
     stream.shutdown();
 }
 
-fn tunnel_port_read(s: TcpStream, read_port: TunnelReadPort) {
+fn tunnel_port_read(s: TcpStream,
+                    read_port: TunnelReadPort) -> Result<(), Error> {
     let addr = match read_port.read() {
         TunnelPortMsg::ConnectOk(buf) => {
             from_utf8(&buf[..]).unwrap().to_socket_addrs().unwrap().nth(0)
@@ -69,11 +73,10 @@ fn tunnel_port_read(s: TcpStream, read_port: TunnelReadPort) {
     let mut stream = Tcp::new(s);
     match addr {
         Some(addr) => {
-            if !reply_connect_success(&mut stream, addr) { return }
+            try!(reply_connect_success(&mut stream, addr));
         },
         None => {
-            reply_failure(&mut stream);
-            return
+            try!(reply_failure(&mut stream));
         }
     }
 
@@ -83,10 +86,14 @@ fn tunnel_port_read(s: TcpStream, read_port: TunnelReadPort) {
             _ => break
         };
 
-        if !stream.write(&buf[..]) { break }
+        match stream.write(&buf[..]) {
+            Ok(_) => {},
+            Err(_) => break,
+        }
     }
 
     stream.shutdown();
+    Ok(())
 }
 
 fn main() {
