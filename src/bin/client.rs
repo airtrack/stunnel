@@ -77,6 +77,7 @@ fn tunnel_port_read(s: TcpStream,
         },
         None => {
             try!(reply_failure(&mut stream));
+            return Ok(())
         }
     }
 
