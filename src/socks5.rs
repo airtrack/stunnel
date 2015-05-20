@@ -21,74 +21,54 @@ pub enum ConnectDest {
     Unknown,
 }
 
-fn select_method(stream: &mut Tcp) -> u8 {
+fn select_method(stream: &mut Tcp) -> Result<u8, Error> {
     match stream.read_u8() {
         Ok(VER) => {},
-        _ => return METHOD_NO_ACCEPT
+        Ok(_) => return Ok(METHOD_NO_ACCEPT),
+        Err(error) => return Err(error)
     }
 
-    let method_num = match stream.read_u8() {
-        Ok(method_num) => method_num,
-        Err(_) => return METHOD_NO_ACCEPT
-    };
-
+    let method_num = try!(stream.read_u8());
     if method_num == 1 {
         match stream.read_u8() {
             Ok(METHOD_NO_AUTH) => {},
-            _ => return METHOD_NO_ACCEPT
+            Ok(_) => return Ok(METHOD_NO_ACCEPT),
+            Err(error) => return Err(error)
         }
     } else {
-        let methods = match stream.read_exact(method_num as usize) {
-            Ok(methods) => methods,
-            Err(_) => return METHOD_NO_ACCEPT
-        };
-
+        let methods = try!(stream.read_exact(method_num as usize));
         if !methods.into_iter().any(|method| method == METHOD_NO_AUTH) {
-            return METHOD_NO_ACCEPT
+            return Ok(METHOD_NO_ACCEPT)
         }
     }
 
-    METHOD_NO_AUTH
+    Ok(METHOD_NO_AUTH)
 }
 
-fn reply_method(stream: &mut Tcp, method: u8) -> bool {
+fn reply_method(stream: &mut Tcp, method: u8) -> Result<(), Error> {
     let reply = [VER, method];
-    match stream.write(&reply) {
-        Ok(_) => true,
-        Err(_) => false
-    }
+    stream.write(&reply)
 }
 
-pub fn get_connect_dest(stream: &mut Tcp) -> ConnectDest {
-    let method = select_method(stream);
-    if !reply_method(stream, method) {
-        return ConnectDest::Unknown
-    }
+pub fn get_connect_dest(stream: &mut Tcp) -> Result<ConnectDest, Error> {
+    let method = try!(select_method(stream));
+    try!(reply_method(stream, method));
 
     if method != METHOD_NO_AUTH {
-        return ConnectDest::Unknown
+        return Ok(ConnectDest::Unknown)
     }
 
-    let buf = match stream.read_exact(4) {
-        Ok(buf) => buf,
-        Err(_) => return ConnectDest::Unknown
-    };
-
+    let mut buf = [0u8; 4];
+    try!(stream.read_exact_buf(&mut buf));
     if buf[1] != CMD_CONNECT {
-        return ConnectDest::Unknown
+        return Ok(ConnectDest::Unknown)
     }
 
-    match buf[3] {
+    let dest = match buf[3] {
         ATYP_IPV4 => {
-            let ipv4 = match stream.read_exact(4) {
-                Ok(ipv4) => ipv4,
-                Err(_) => return ConnectDest::Unknown
-            };
-
-            let port = match stream.read_u16() {
-                Ok(port) => port,
-                Err(_) => return ConnectDest::Unknown
-            };
+            let mut ipv4 = [0u8; 4];
+            try!(stream.read_exact_buf(&mut ipv4));
+            let port = try!(stream.read_u16());
 
             ConnectDest::Addr(
                 SocketAddr::V4(
@@ -102,26 +82,16 @@ pub fn get_connect_dest(stream: &mut Tcp) -> ConnectDest {
         },
 
         ATYP_DOMAINNAME => {
-            let len = match stream.read_u8() {
-                Ok(len) => len,
-                Err(_) => return ConnectDest::Unknown
-            };
-
-            let domain_name = match stream.read_exact(len as usize) {
-                Ok(domain_name) => domain_name,
-                Err(_) => return ConnectDest::Unknown
-            };
-
-            let port = match stream.read_u16() {
-                Ok(port) => port,
-                Err(_) => return ConnectDest::Unknown
-            };
-
+            let len = try!(stream.read_u8());
+            let domain_name = try!(stream.read_exact(len as usize));
+            let port = try!(stream.read_u16());
             ConnectDest::DomainName(domain_name, port)
         },
 
         _ => ConnectDest::Unknown
-    }
+    };
+
+    Ok(dest)
 }
 
 pub fn reply_connect_success(stream: &mut Tcp,

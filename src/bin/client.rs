@@ -25,13 +25,13 @@ fn tunnel_port_write(s: TcpStream, mut write_port: TunnelWritePort,
     let mut stream = Tcp::new(s.try_clone().unwrap());
 
     match get_connect_dest(&mut stream) {
-        ConnectDest::Addr(addr) => {
+        Ok(ConnectDest::Addr(addr)) => {
             let mut buf = Vec::new();
             let _ = write!(&mut buf, "{}", addr);
             write_port.connect(buf);
         },
 
-        ConnectDest::DomainName(domain_name, port) => {
+        Ok(ConnectDest::DomainName(domain_name, port)) => {
             write_port.connect_domain_name(domain_name, port);
         },
 
