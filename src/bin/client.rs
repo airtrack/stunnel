@@ -113,16 +113,29 @@ fn main() {
         return
     }
 
-    let mut tunnel = Tunnel::new(server_addr, key);
+    let mut count = 10;
+    let mut tunnels = Vec::new();
+    while count > 0 {
+        let tunnel = Tunnel::new(server_addr.clone(), key.clone());
+        tunnels.push(tunnel);
+        count -= 1;
+    }
+
+    let mut index = 0;
     let listener = TcpListener::bind("127.0.0.1:1080").unwrap();
 
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                let (write_port, read_port) = tunnel.open_port();
-                thread::spawn(move || {
-                    tunnel_port_write(stream, write_port, read_port);
-                });
+                {
+                    let tunnel: &mut Tunnel = tunnels.get_mut(index).unwrap();
+                    let (write_port, read_port) = tunnel.open_port();
+                    thread::spawn(move || {
+                        tunnel_port_write(stream, write_port, read_port);
+                    });
+                }
+
+                index = (index + 1) % tunnels.len();
             },
 
             Err(_) => {}
