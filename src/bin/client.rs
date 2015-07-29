@@ -99,8 +99,8 @@ fn tunnel_port_read(s: TcpStream,
 
 fn main() {
     let args: Vec<_> = env::args().collect();
-    if args.len() != 3 {
-        println!("usage: {} server-address key", args[0]);
+    if args.len() != 4 {
+        println!("usage: {} server-address key tunnel-count", args[0]);
         return
     }
 
@@ -113,7 +113,14 @@ fn main() {
         return
     }
 
-    let mut count = 10;
+    let mut count: u32 = match args[3].parse() {
+        Err(_) | Ok(0) => {
+            println!("tunnel-count must greater than 0");
+            return
+        },
+        Ok(count) => count
+    };
+
     let mut tunnels = Vec::new();
     while count > 0 {
         let tunnel = Tunnel::new(server_addr.clone(), key.clone());
