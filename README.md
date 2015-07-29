@@ -30,6 +30,6 @@ Usage
 -----
 
 	./server listenip:port key
-	./client serverip:port key
+	./client serverip:port key tunnel-count
 
 Browser connect client(`127.0.0.1:1080`) through SOCKS5.
