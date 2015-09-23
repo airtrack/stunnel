@@ -1,6 +1,6 @@
 #![feature(ip_addr)]
-#![feature(std_misc)]
 #![feature(lookup_host)]
+#![feature(mpsc_select)]
 
 extern crate crypto;
 extern crate time;
