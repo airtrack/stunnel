@@ -5,6 +5,7 @@ use std::thread;
 use std::collections::HashMap;
 use std::net::lookup_host;
 use std::net::TcpStream;
+use std::net::SocketAddr;
 use std::io::Write;
 use std::io::Error;
 use std::io::ErrorKind;
@@ -85,7 +86,13 @@ fn tunnel_port_task(id: u32, rx: Receiver<TunnelPortMsg>,
                     for host in hosts {
                         match host {
                             Ok(addr) => {
-                                match TcpStream::connect((addr.ip(), port)) {
+                                let conn = match addr {
+                                    SocketAddr::V4(addr_v4) =>
+                                        TcpStream::connect((addr_v4.ip().clone(), port)),
+                                    SocketAddr::V6(addr_v6) =>
+                                        TcpStream::connect((addr_v6.ip().clone(), port))
+                                };
+                                match conn {
                                     Ok(s) => { stream = Some(s); break; },
                                     Err(_) => {}
                                 }

@@ -1,6 +1,5 @@
 use std::vec::Vec;
 use rand;
-use rand::random;
 use crypto::blowfish::Blowfish;
 use crypto::blockmodes::CtrMode;
 use crypto::symmetriccipher::{Encryptor, Decryptor};

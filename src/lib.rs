@@ -1,4 +1,3 @@
-#![feature(ip_addr)]
 #![feature(lookup_host)]
 #![feature(mpsc_select)]
 

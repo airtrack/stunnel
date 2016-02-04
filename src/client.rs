@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::net::TcpStream;
 use std::vec::Vec;
 use std::io::Error;
+use std::time::Duration;
 use time;
 use super::tcp::Tcp;
 use super::timer::Timer;
@@ -151,7 +152,7 @@ fn tunnel_core_task(server_addr: String, key: Vec<u8>,
     let sender = match TcpStream::connect(&server_addr[..]) {
         Ok(sender) => sender,
         Err(_) => {
-            thread::sleep_ms(1000);
+            thread::sleep(Duration::from_millis(1000));
             thread::spawn(move || {
                 tunnel_core_task(server_addr, key, core_rx, core_tx);
             });
