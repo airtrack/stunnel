@@ -4,7 +4,9 @@
 extern crate crypto;
 extern crate time;
 extern crate rand;
+extern crate log;
 
+pub mod logger;
 pub mod tcp;
 pub mod timer;
 pub mod client;

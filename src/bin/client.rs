@@ -1,3 +1,5 @@
+#[macro_use]
+extern crate log;
 extern crate stunnel;
 
 use std::env;
@@ -9,6 +11,7 @@ use std::net::TcpListener;
 use std::net::TcpStream;
 use std::net::ToSocketAddrs;
 use std::str::from_utf8;
+use stunnel::logger;
 use stunnel::tcp::Tcp;
 use stunnel::cryptor::Cryptor;
 use stunnel::client::{
@@ -99,8 +102,9 @@ fn tunnel_port_read(s: TcpStream,
 
 fn main() {
     let args: Vec<_> = env::args().collect();
-    if args.len() != 4 {
-        println!("usage: {} server-address key tunnel-count", args[0]);
+    if args.len() < 4 {
+        println!("usage: {} server-address key tunnel-count [log path]",
+                 args[0]);
         return
     }
 
@@ -121,6 +125,14 @@ fn main() {
         Ok(count) => count
     };
 
+    let log_path = if args.len() > 4 {
+        args[4].clone()
+    } else {
+        String::new()
+    };
+
+    logger::init(log::LogLevel::Info, log_path).unwrap();
+
     let mut tunnels = Vec::new();
     while count > 0 {
         let tunnel = Tunnel::new(server_addr.clone(), key.clone());
@@ -130,6 +142,8 @@ fn main() {
 
     let mut index = 0;
     let listener = TcpListener::bind("127.0.0.1:1080").unwrap();
+
+    info!("starting up");
 
     for stream in listener.incoming() {
         match stream {
