@@ -50,12 +50,12 @@ pub struct TunnelReadPort {
 }
 
 impl Tunnel {
-    pub fn new(server_addr: String, key: Vec<u8>) -> Tunnel {
+    pub fn new(tid: u32, server_addr: String, key: Vec<u8>) -> Tunnel {
         let (tx, rx) = channel();
         let tx2 = tx.clone();
 
         thread::spawn(move || {
-            tunnel_core_task(server_addr, key, rx, tx);
+            tunnel_core_task(tid, server_addr, key, rx, tx);
         });
 
         Tunnel { id: 1, core_tx: tx2 }
@@ -146,7 +146,7 @@ fn tunnel_recv_loop(key: &Vec<u8>, core_tx: &Sender<TunnelMsg>,
     Ok(())
 }
 
-fn tunnel_core_task(server_addr: String, key: Vec<u8>,
+fn tunnel_core_task(tid: u32, server_addr: String, key: Vec<u8>,
                     core_rx: Receiver<TunnelMsg>,
                     core_tx: Sender<TunnelMsg>) {
     let sender = match TcpStream::connect(&server_addr[..]) {
@@ -154,7 +154,7 @@ fn tunnel_core_task(server_addr: String, key: Vec<u8>,
         Err(_) => {
             thread::sleep(Duration::from_millis(1000));
             thread::spawn(move || {
-                tunnel_core_task(server_addr, key, core_rx, core_tx);
+                tunnel_core_task(tid, server_addr, key, core_rx, core_tx);
             });
             return
         }
@@ -171,7 +171,7 @@ fn tunnel_core_task(server_addr: String, key: Vec<u8>,
     let mut stream = Tcp::new(sender);
     let mut port_map = HashMap::<u32, Sender<TunnelPortMsg>>::new();
 
-    let _ = tunnel_loop(&key, &core_rx, &mut stream, &mut port_map);
+    let _ = tunnel_loop(tid, &key, &core_rx, &mut stream, &mut port_map);
 
     stream.shutdown();
     for (_, tx) in port_map.iter() {
@@ -179,13 +179,14 @@ fn tunnel_core_task(server_addr: String, key: Vec<u8>,
     }
 
     thread::spawn(move || {
-        tunnel_core_task(server_addr, key, core_rx, core_tx);
+        tunnel_core_task(tid, server_addr, key, core_rx, core_tx);
     });
 }
 
-fn tunnel_loop(key: &Vec<u8>, core_rx: &Receiver<TunnelMsg>, stream: &mut Tcp,
-               port_map: &mut HashMap<u32, Sender<TunnelPortMsg>>
-              ) -> Result<(), Error> {
+fn tunnel_loop(tid: u32, key: &Vec<u8>,
+               core_rx: &Receiver<TunnelMsg>, stream: &mut Tcp,
+               port_map: &mut HashMap<u32, Sender<TunnelPortMsg>>)
+    -> Result<(), Error> {
     let mut encryptor = Cryptor::new(&key[..]);
 
     try!(stream.write(encryptor.ctr_as_slice()));
@@ -251,6 +252,10 @@ fn tunnel_loop(key: &Vec<u8>, core_rx: &Receiver<TunnelMsg>, stream: &mut Tcp,
                 },
 
                 TunnelMsg::ConnectDN(id, buf, port) => {
+                    info!("{}.{}: connecting {}:{}", tid, id,
+                          String::from_utf8(buf.clone()).
+                          unwrap_or(String::new()), port);
+
                     let data = encryptor.encrypt(&buf[..]);
 
                     try!(stream.write_u8(cs::CONNECT_DOMAIN_NAME));

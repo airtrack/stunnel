@@ -1,10 +1,11 @@
 #![feature(lookup_host)]
 #![feature(mpsc_select)]
 
+#[macro_use]
+extern crate log;
 extern crate crypto;
 extern crate time;
 extern crate rand;
-extern crate log;
 
 pub mod logger;
 pub mod tcp;

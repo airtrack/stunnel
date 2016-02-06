@@ -117,7 +117,7 @@ fn main() {
         return
     }
 
-    let mut count: u32 = match args[3].parse() {
+    let count: u32 = match args[3].parse() {
         Err(_) | Ok(0) => {
             println!("tunnel-count must greater than 0");
             return
@@ -134,10 +134,9 @@ fn main() {
     logger::init(log::LogLevel::Info, log_path).unwrap();
 
     let mut tunnels = Vec::new();
-    while count > 0 {
-        let tunnel = Tunnel::new(server_addr.clone(), key.clone());
+    for i in 0..count {
+        let tunnel = Tunnel::new(i, server_addr.clone(), key.clone());
         tunnels.push(tunnel);
-        count -= 1;
     }
 
     let mut index = 0;
