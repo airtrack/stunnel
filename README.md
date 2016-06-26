@@ -33,3 +33,8 @@ Usage
 	./client serverip:port key tunnel-count
 
 Browser connect client(`127.0.0.1:1080`) through SOCKS5.
+
+See also
+--------
+
+C++ version of [stunnel](https://github.com/airtrack/snet/tree/master/test/stunnel).
