@@ -235,6 +235,7 @@ fn tunnel_loop(tid: u32, key: &Vec<u8>,
                 },
 
                 TunnelMsg::Shutdown(id) => {
+                    alive_time = time::get_time();
                     port_map.get(&id).map(|tx| {
                         let _ = tx.send(TunnelPortMsg::ClosePort);
                     });
@@ -266,12 +267,14 @@ fn tunnel_loop(tid: u32, key: &Vec<u8>,
                 },
 
                 TunnelMsg::ConnectOk(id, buf) => {
+                    alive_time = time::get_time();
                     port_map.get(&id).map(move |tx| {
                         let _ = tx.send(TunnelPortMsg::ConnectOk(buf));
                     });
                 },
 
                 TunnelMsg::RecvData(id, buf) => {
+                    alive_time = time::get_time();
                     port_map.get(&id).map(move |tx| {
                         let _ = tx.send(TunnelPortMsg::Data(buf));
                     });

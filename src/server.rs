@@ -84,19 +84,14 @@ fn tunnel_port_task(id: u32, rx: Receiver<TunnelPortMsg>,
                 Ok(hosts) => {
                     let mut stream = None;
                     for host in hosts {
-                        match host {
-                            Ok(addr) => {
-                                let conn = match addr {
-                                    SocketAddr::V4(addr_v4) =>
-                                        TcpStream::connect((addr_v4.ip().clone(), port)),
-                                    SocketAddr::V6(addr_v6) =>
-                                        TcpStream::connect((addr_v6.ip().clone(), port))
-                                };
-                                match conn {
-                                    Ok(s) => { stream = Some(s); break; },
-                                    Err(_) => {}
-                                }
-                            },
+                        let conn = match host {
+                            SocketAddr::V4(addr_v4) =>
+                                TcpStream::connect((addr_v4.ip().clone(), port)),
+                                SocketAddr::V6(addr_v6) =>
+                                    TcpStream::connect((addr_v6.ip().clone(), port))
+                        };
+                        match conn {
+                            Ok(s) => { stream = Some(s); break; },
                             Err(_) => {}
                         }
                     }
@@ -251,6 +246,7 @@ fn tunnel_loop(key: &Vec<u8>, core_tx: &Sender<TunnelMsg>,
                 },
 
                 TunnelMsg::OpenPort(id) => {
+                    alive_time = time::get_time();
                     let (tx, rx) = channel();
                     port_map.insert(id, tx);
 
@@ -261,6 +257,7 @@ fn tunnel_loop(key: &Vec<u8>, core_tx: &Sender<TunnelMsg>,
                 },
 
                 TunnelMsg::ClosePort(id) => {
+                    alive_time = time::get_time();
                     port_map.get(&id).map(|tx| {
                         let _ = tx.send(TunnelPortMsg::ClosePort);
                     });
@@ -295,12 +292,14 @@ fn tunnel_loop(key: &Vec<u8>, core_tx: &Sender<TunnelMsg>,
                 },
 
                 TunnelMsg::ConnectDN(id, domain_name, port) => {
+                    alive_time = time::get_time();
                     port_map.get(&id).map(move |tx| {
                         let _ = tx.send(TunnelPortMsg::ConnectDN(domain_name, port));
                     });
                 },
 
                 TunnelMsg::RecvData(op, id, buf) => {
+                    alive_time = time::get_time();
                     port_map.get(&id).map(move |tx| {
                         let _ = tx.send(TunnelPortMsg::Data(op, buf));
                     });
