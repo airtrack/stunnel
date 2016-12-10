@@ -24,16 +24,18 @@ mod protocol {
     pub mod cs {
         pub const OPEN_PORT: u8 = 1;
         pub const CLOSE_PORT: u8 = 2;
-        pub const CONNECT: u8 = 3;
-        pub const CONNECT_DOMAIN_NAME: u8 = 4;
-        pub const DATA: u8 = 5;
-        pub const HEARTBEAT: u8 = 6;
+        pub const SHUTDOWN_WRITE: u8 = 4;
+        pub const CONNECT: u8 = 5;
+        pub const CONNECT_DOMAIN_NAME: u8 = 6;
+        pub const DATA: u8 = 7;
+        pub const HEARTBEAT: u8 = 8;
     }
 
     pub mod sc {
-        pub const CONNECT_OK: u8 = 1;
-        pub const SHUTDOWN: u8 = 2;
-        pub const DATA: u8 = 3;
-        pub const HEARTBEAT_RSP: u8 = 4;
+        pub const CLOSE_PORT: u8 = 1;
+        pub const SHUTDOWN_WRITE: u8 = 3;
+        pub const CONNECT_OK: u8 = 4;
+        pub const DATA: u8 = 5;
+        pub const HEARTBEAT_RSP: u8 = 6;
     }
 }

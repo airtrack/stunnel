@@ -1,6 +1,5 @@
 use std::net::{Ipv4Addr, SocketAddrV4, SocketAddr};
-use std::io::Error;
-use super::tcp::Tcp;
+use super::tcp::{Tcp, TcpError};
 
 const VER: u8 = 5;
 const METHOD_NO_AUTH: u8 = 0;
@@ -21,7 +20,7 @@ pub enum ConnectDest {
     Unknown,
 }
 
-fn select_method(stream: &mut Tcp) -> Result<u8, Error> {
+fn select_method(stream: &mut Tcp) -> Result<u8, TcpError> {
     match stream.read_u8() {
         Ok(VER) => {},
         Ok(_) => return Ok(METHOD_NO_ACCEPT),
@@ -45,12 +44,12 @@ fn select_method(stream: &mut Tcp) -> Result<u8, Error> {
     Ok(METHOD_NO_AUTH)
 }
 
-fn reply_method(stream: &mut Tcp, method: u8) -> Result<(), Error> {
+fn reply_method(stream: &mut Tcp, method: u8) -> Result<(), TcpError> {
     let reply = [VER, method];
     stream.write(&reply)
 }
 
-pub fn get_connect_dest(stream: &mut Tcp) -> Result<ConnectDest, Error> {
+pub fn get_connect_dest(stream: &mut Tcp) -> Result<ConnectDest, TcpError> {
     let method = try!(select_method(stream));
     try!(reply_method(stream, method));
 
@@ -95,17 +94,17 @@ pub fn get_connect_dest(stream: &mut Tcp) -> Result<ConnectDest, Error> {
 }
 
 pub fn reply_connect_success(stream: &mut Tcp,
-                             addr: SocketAddr) -> Result<(), Error> {
+                             addr: SocketAddr) -> Result<(), TcpError> {
     reply_result(stream, addr, REP_SUCCESS)
 }
 
-pub fn reply_failure(stream: &mut Tcp) -> Result<(), Error> {
+pub fn reply_failure(stream: &mut Tcp) -> Result<(), TcpError> {
     let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 0));
     reply_result(stream, addr, REP_FAILURE)
 }
 
 fn reply_result(stream: &mut Tcp,
-                addr: SocketAddr, rep: u8) -> Result<(), Error> {
+                addr: SocketAddr, rep: u8) -> Result<(), TcpError> {
     let buf = [VER, rep, RSV];
     try!(stream.write(&buf));
 
