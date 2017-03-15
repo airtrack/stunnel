@@ -57,6 +57,8 @@ pub struct TunnelReadPort {
 }
 
 struct PortMapValue {
+    host: String,
+    port: u16,
     count: u32,
     tx: Sender<TunnelPortMsg>,
 }
@@ -208,6 +210,7 @@ fn tunnel_core_task(tid: u32, server_addr: String, key: Vec<u8>,
     let mut port_map = PortMap::new();
 
     let _ = tunnel_loop(tid, &key, &core_rx, &mut stream, &mut port_map);
+    info!("tunnel {} broken", tid);
 
     stream.shutdown();
     for (_, value) in port_map.iter() {
@@ -243,7 +246,8 @@ fn tunnel_loop(tid: u32, key: &Vec<u8>,
 
             msg = core_rx.recv() => match msg.unwrap() {
                 TunnelMsg::CSOpenPort(id, tx) => {
-                    port_map.insert(id, PortMapValue { count: 2, tx: tx });
+                    port_map.insert(id, PortMapValue {
+                        count: 2, tx: tx, host: String::new(), port: 0 });
 
                     try!(stream.write_u8(cs::OPEN_PORT));
                     try!(stream.write_u32(id));
@@ -259,9 +263,15 @@ fn tunnel_loop(tid: u32, key: &Vec<u8>,
                 },
 
                 TunnelMsg::CSConnectDN(id, buf, port) => {
-                    info!("{}.{}: connecting {}:{}", tid, id,
-                          String::from_utf8(buf.clone()).
-                          unwrap_or(String::new()), port);
+                    let host = String::from_utf8(buf.clone()).
+                        unwrap_or(String::new());
+
+                    if let Some(value) = port_map.get_mut(&id) {
+                        value.host = host.clone();
+                        value.port = port;
+                    }
+
+                    info!("{}.{}: connecting {}:{}", tid, id, host, port);
 
                     let data = encryptor.encrypt(&buf[..]);
 
@@ -273,6 +283,17 @@ fn tunnel_loop(tid: u32, key: &Vec<u8>,
                 },
 
                 TunnelMsg::CSShutdownWrite(id) => {
+                    match port_map.get(&id) {
+                        Some(value) => {
+                            info!("{}.{}: client shutdown write {}:{}",
+                                  tid, id, value.host, value.port);
+                        },
+                        None => {
+                            info!("{}.{}: client shutdown write unknown server",
+                                  tid, id);
+                        }
+                    }
+
                     try!(stream.write_u8(cs::SHUTDOWN_WRITE));
                     try!(stream.write_u32(id));
                 },
@@ -287,6 +308,17 @@ fn tunnel_loop(tid: u32, key: &Vec<u8>,
                 },
 
                 TunnelMsg::CSClosePort(id) => {
+                    match port_map.get(&id) {
+                        Some(value) => {
+                            info!("{}.{}: client close {}:{}",
+                                  tid, id, value.host, value.port);
+                        },
+                        None => {
+                            info!("{}.{}: client close unknown server",
+                                  tid, id);
+                        }
+                    }
+
                     let res = port_map.get(&id).map(|value| {
                         let _ = value.tx.send(TunnelPortMsg::ClosePort);
 
@@ -308,6 +340,17 @@ fn tunnel_loop(tid: u32, key: &Vec<u8>,
                 },
 
                 TunnelMsg::SCClosePort(id) => {
+                    match port_map.get(&id) {
+                        Some(value) => {
+                            info!("{}.{}: server close {}:{}",
+                                  tid, id, value.host, value.port);
+                        },
+                        None => {
+                            info!("{}.{}: server close unknown client",
+                                  tid, id);
+                        }
+                    }
+
                     alive_time = time::get_time();
                     port_map.get(&id).map(|value| {
                         let _ = value.tx.send(TunnelPortMsg::ClosePort);
@@ -317,6 +360,17 @@ fn tunnel_loop(tid: u32, key: &Vec<u8>,
                 },
 
                 TunnelMsg::SCShutdownWrite(id) => {
+                    match port_map.get(&id) {
+                        Some(value) => {
+                            info!("{}.{}: server shutdown write {}:{}",
+                                  tid, id, value.host, value.port);
+                        },
+                        None => {
+                            info!("{}.{}: server shutdown write unknown client",
+                                  tid, id);
+                        }
+                    }
+
                     alive_time = time::get_time();
                     port_map.get(&id).map(|value| {
                         let _ = value.tx.send(TunnelPortMsg::ShutdownWrite);
@@ -324,6 +378,17 @@ fn tunnel_loop(tid: u32, key: &Vec<u8>,
                 },
 
                 TunnelMsg::SCConnectOk(id, buf) => {
+                    match port_map.get(&id) {
+                        Some(value) => {
+                            info!("{}.{}: connect {}:{} ok",
+                                  tid, id, value.host, value.port);
+                        },
+                        None => {
+                            info!("{}.{}: connect unknown server ok",
+                                  tid, id);
+                        }
+                    }
+
                     alive_time = time::get_time();
                     port_map.get(&id).map(move |value| {
                         let _ = value.tx.send(TunnelPortMsg::ConnectOk(buf));
@@ -347,6 +412,17 @@ fn tunnel_loop(tid: u32, key: &Vec<u8>,
                         };
 
                     if remove {
+                        match port_map.get(&id) {
+                            Some(value) => {
+                                info!("{}.{}: drop tunnel port {}:{}",
+                                      tid, id, value.host, value.port);
+                            },
+                            None => {
+                                info!("{}.{}: drop unknown tunnel port",
+                                      tid, id);
+                            }
+                        }
+
                         port_map.remove(&id);
                     }
                 }
