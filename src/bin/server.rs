@@ -1,3 +1,4 @@
+extern crate getopts;
 extern crate stunnel;
 
 use std::env;
@@ -7,13 +8,22 @@ use stunnel::cryptor::Cryptor;
 
 fn main() {
     let args: Vec<_> = env::args().collect();
-    if args.len() != 3 {
-        println!("usage: {} listen-address key", args[0]);
-        return
-    }
+    let program = args[0].clone();
 
-    let listen_addr = args[1].clone();
-    let key = args[2].clone().into_bytes();
+    let mut opts = getopts::Options::new();
+    opts.reqopt("l", "listen", "listen address", "listen-address");
+    opts.reqopt("k", "key", "secret key", "key");
+
+    let matches = match opts.parse(&args[1..]) {
+        Ok(m) => { m }
+        Err(_) => {
+            println!("{}", opts.short_usage(&program));
+            return
+        }
+    };
+
+    let listen_addr = matches.opt_str("l").unwrap();
+    let key = matches.opt_str("k").unwrap().into_bytes();
     let (min, max) = Cryptor::key_size_range();
 
     if key.len() < min || key.len() > max {

@@ -1,5 +1,6 @@
 #[macro_use]
 extern crate log;
+extern crate getopts;
 extern crate stunnel;
 
 use std::env;
@@ -107,39 +108,8 @@ fn tunnel_port_read(s: TcpStream, read_port: TunnelReadPort) {
     }
 }
 
-fn main() {
-    let args: Vec<_> = env::args().collect();
-    if args.len() < 4 {
-        println!("usage: {} server-address key tunnel-count [log path]",
-                 args[0]);
-        return
-    }
-
-    let server_addr = args[1].clone();
-    let key = args[2].clone().into_bytes();
-    let (min, max) = Cryptor::key_size_range();
-
-    if key.len() < min || key.len() > max {
-        println!("key length must in range [{}, {}]", min, max);
-        return
-    }
-
-    let count: u32 = match args[3].parse() {
-        Err(_) | Ok(0) => {
-            println!("tunnel-count must greater than 0");
-            return
-        },
-        Ok(count) => count
-    };
-
-    let log_path = if args.len() > 4 {
-        args[4].clone()
-    } else {
-        String::new()
-    };
-
-    logger::init(log::LogLevel::Info, log_path).unwrap();
-
+fn run_tunnels(listen_addr: String, server_addr: String,
+               count: u32, key: Vec<u8>) {
     let mut tunnels = Vec::new();
     for i in 0..count {
         let tunnel = Tunnel::new(i, server_addr.clone(), key.clone());
@@ -147,7 +117,7 @@ fn main() {
     }
 
     let mut index = 0;
-    let listener = TcpListener::bind("127.0.0.1:1080").unwrap();
+    let listener = TcpListener::bind(listen_addr.as_str()).unwrap();
 
     info!("starting up");
 
@@ -168,4 +138,48 @@ fn main() {
             Err(_) => {}
         }
     }
+}
+
+fn main() {
+    let args: Vec<_> = env::args().collect();
+    let program = args[0].clone();
+
+    let mut opts = getopts::Options::new();
+    opts.reqopt("s", "server", "server address", "server-address");
+    opts.reqopt("k", "key", "secret key", "key");
+    opts.reqopt("c", "tunnel-count", "tunnel count", "tunnel-count");
+    opts.optopt("l", "listen", "listen address", "listen-address");
+    opts.optopt("", "log", "log path", "log-path");
+
+    let matches = match opts.parse(&args[1..]) {
+        Ok(m) => { m }
+        Err(_) => {
+            println!("{}", opts.short_usage(&program));
+            return
+        }
+    };
+
+    let server_addr = matches.opt_str("s").unwrap();
+    let tunnel_count = matches.opt_str("c").unwrap();
+    let key = matches.opt_str("k").unwrap().into_bytes();
+    let log_path = matches.opt_str("log").unwrap_or(String::new());
+    let listen_addr = matches.opt_str("l")
+        .unwrap_or("127.0.0.1:1080".to_string());
+    let (min, max) = Cryptor::key_size_range();
+
+    if key.len() < min || key.len() > max {
+        println!("key length must in range [{}, {}]", min, max);
+        return
+    }
+
+    let count: u32 = match tunnel_count.parse() {
+        Err(_) | Ok(0) => {
+            println!("tunnel-count must greater than 0");
+            return
+        },
+        Ok(count) => count
+    };
+
+    logger::init(log::LogLevel::Info, log_path).unwrap();
+    run_tunnels(listen_addr, server_addr, count, key);
 }

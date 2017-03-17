@@ -29,10 +29,10 @@ Build by [Cargo](https://crates.io/):
 Usage
 -----
 
-	./server listenip:port key
-	./client serverip:port key tunnel-count
+	./server -l listen-address -k key
+	./client -s server-address -k key -c tunnel-count [-l listen-address] [--log log-path]
 
-Browser connect client(`127.0.0.1:1080`) through SOCKS5.
+Browser connect client listen address(`127.0.0.1:1080`) through SOCKS5.
 
 See also
 --------
