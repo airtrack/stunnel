@@ -1,4 +1,6 @@
+use std::sync::mpsc::sync_channel;
 use std::sync::mpsc::channel;
+use std::sync::mpsc::SyncSender;
 use std::sync::mpsc::Sender;
 use std::sync::mpsc::Receiver;
 use std::thread;
@@ -47,12 +49,12 @@ pub struct Tunnel;
 
 struct TunnelWritePort {
     id: u32,
-    tx: Sender<TunnelMsg>,
+    tx: SyncSender<TunnelMsg>,
 }
 
 struct TunnelReadPort {
     id: u32,
-    tx: Sender<TunnelMsg>,
+    tx: SyncSender<TunnelMsg>,
     rx: Receiver<TunnelPortMsg>,
 }
 
@@ -120,7 +122,7 @@ fn tunnel_port_write(s: TcpStream, write_port: TunnelWritePort) {
     let mut stream = Tcp::new(s);
 
     loop {
-        match stream.read_at_most(10240) {
+        match stream.read_at_most(1024) {
             Ok(buf) => {
                 write_port.write(buf);
             },
@@ -220,7 +222,7 @@ fn tunnel_port_task(read_port: TunnelReadPort, write_port: TunnelWritePort) {
 }
 
 fn tunnel_tcp_recv(key: Vec<u8>, receiver: TcpStream,
-                   core_tx: Sender<TunnelMsg>) {
+                   core_tx: SyncSender<TunnelMsg>) {
     let mut stream = Tcp::new(receiver);
     let _ = tunnel_recv_loop(&key, &core_tx, &mut stream);
 
@@ -228,7 +230,7 @@ fn tunnel_tcp_recv(key: Vec<u8>, receiver: TcpStream,
     let _ = core_tx.send(TunnelMsg::CloseTunnel);
 }
 
-fn tunnel_recv_loop(key: &Vec<u8>, core_tx: &Sender<TunnelMsg>,
+fn tunnel_recv_loop(key: &Vec<u8>, core_tx: &SyncSender<TunnelMsg>,
                     stream: &mut Tcp) -> Result<(), TcpError> {
     let ctr = try!(stream.read_exact(Cryptor::ctr_size()));
     let mut decryptor = Cryptor::with_ctr(&key[..], ctr);
@@ -279,7 +281,7 @@ fn tunnel_recv_loop(key: &Vec<u8>, core_tx: &Sender<TunnelMsg>,
 }
 
 fn tunnel_core_task(key: Vec<u8>, sender: TcpStream) {
-    let (core_tx, core_rx) = channel();
+    let (core_tx, core_rx) = sync_channel(10000);
     let receiver = sender.try_clone().unwrap();
     let core_tx2 = core_tx.clone();
     let key2 = key.clone();
@@ -299,7 +301,7 @@ fn tunnel_core_task(key: Vec<u8>, sender: TcpStream) {
     }
 }
 
-fn tunnel_loop(key: &Vec<u8>, core_tx: &Sender<TunnelMsg>,
+fn tunnel_loop(key: &Vec<u8>, core_tx: &SyncSender<TunnelMsg>,
                core_rx: &Receiver<TunnelMsg>, stream: &mut Tcp,
                port_map: &mut PortMap) -> Result<(), TcpError> {
     let mut encryptor = Cryptor::new(&key[..]);

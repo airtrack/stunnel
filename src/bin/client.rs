@@ -48,7 +48,7 @@ fn tunnel_port_write(s: TcpStream, read_port: TunnelReadPort,
     });
 
     loop {
-        match stream.read_at_most(10240) {
+        match stream.read_at_most(1024) {
             Ok(buf) => {
                 write_port.write(buf);
             },

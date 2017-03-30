@@ -1,4 +1,6 @@
+use std::sync::mpsc::sync_channel;
 use std::sync::mpsc::channel;
+use std::sync::mpsc::SyncSender;
 use std::sync::mpsc::Sender;
 use std::sync::mpsc::Receiver;
 use std::thread;
@@ -42,17 +44,17 @@ pub enum TunnelPortMsg {
 
 pub struct Tunnel {
     id: u32,
-    core_tx: Sender<TunnelMsg>,
+    core_tx: SyncSender<TunnelMsg>,
 }
 
 pub struct TunnelWritePort {
     id: u32,
-    tx: Sender<TunnelMsg>,
+    tx: SyncSender<TunnelMsg>,
 }
 
 pub struct TunnelReadPort {
     id: u32,
-    tx: Sender<TunnelMsg>,
+    tx: SyncSender<TunnelMsg>,
     rx: Receiver<TunnelPortMsg>,
 }
 
@@ -67,7 +69,7 @@ type PortMap = HashMap<u32, PortMapValue>;
 
 impl Tunnel {
     pub fn new(tid: u32, server_addr: String, key: Vec<u8>) -> Tunnel {
-        let (tx, rx) = channel();
+        let (tx, rx) = sync_channel(10000);
         let tx2 = tx.clone();
 
         thread::spawn(move || {
@@ -135,13 +137,13 @@ impl Drop for TunnelReadPort {
 }
 
 fn tunnel_tcp_recv(key: Vec<u8>, receiver: TcpStream,
-                   core_tx: Sender<TunnelMsg>) {
+                   core_tx: SyncSender<TunnelMsg>) {
     let mut stream = Tcp::new(receiver);
     let _ = tunnel_recv_loop(&key, &core_tx, &mut stream);
     stream.shutdown();
 }
 
-fn tunnel_recv_loop(key: &Vec<u8>, core_tx: &Sender<TunnelMsg>,
+fn tunnel_recv_loop(key: &Vec<u8>, core_tx: &SyncSender<TunnelMsg>,
                     stream: &mut Tcp) -> Result<(), TcpError> {
     let ctr = try!(stream.read_exact(Cryptor::ctr_size()));
     let mut decryptor = Cryptor::with_ctr(&key[..], ctr);
@@ -186,7 +188,7 @@ fn tunnel_recv_loop(key: &Vec<u8>, core_tx: &Sender<TunnelMsg>,
 
 fn tunnel_core_task(tid: u32, server_addr: String, key: Vec<u8>,
                     core_rx: Receiver<TunnelMsg>,
-                    core_tx: Sender<TunnelMsg>) {
+                    core_tx: SyncSender<TunnelMsg>) {
     let sender = match TcpStream::connect(&server_addr[..]) {
         Ok(sender) => sender,
         Err(_) => {
