@@ -3,12 +3,14 @@
 
 #[macro_use]
 extern crate log;
+extern crate crc;
 extern crate crypto;
 extern crate time;
 extern crate rand;
 
 pub mod logger;
 pub mod tcp;
+pub mod ucp;
 pub mod timer;
 pub mod client;
 pub mod server;
