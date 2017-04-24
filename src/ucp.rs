@@ -310,31 +310,90 @@ impl UcpStreamImpl {
     }
 
     fn process_state_accepting(&mut self, packet: Box<UcpPacket>) {
-
-    }
-
-    fn process_state_connecting(&mut self, packet: Box<UcpPacket>) {
-        if packet.cmd == CMD_SYN_ACK && packet.payload == 8 {
+        if packet.cmd == CMD_ACK && packet.payload == 8 {
             let mut offset = packet.payload_start();
             let seq = packet.parse_u32(&mut offset);
             let timestamp = packet.parse_u32(&mut offset);
 
-            if self.process_ack(seq, timestamp) {
-                let mut ack = self.new_ack_packet();
-                ack.payload_write_u32(packet.seq);
-                ack.payload_write_u32(packet.timestamp);
-
-                self.send_packet_directly(&mut ack);
+            if self.process_an_ack(seq, timestamp) {
                 self.state = UcpState::ESTABLISHED;
             }
         }
     }
 
+    fn process_state_connecting(&mut self, packet: Box<UcpPacket>) {
+        self.process_syn_ack(packet);
+    }
+
     fn process_state_established(&mut self, packet: Box<UcpPacket>) {
+        match packet.cmd {
+            CMD_ACK => {
+                self.process_ack(packet);
+            },
+            CMD_DATA => {
+                self.process_data(packet);
+            },
+            CMD_SYN_ACK => {
+                self.process_syn_ack(packet);
+            },
+            CMD_HEARTBEAT => {
+                self.process_heartbeat(packet);
+            },
+            CMD_HEARTBEAT_ACK => {
+                self.process_heartbeat_ack(packet);
+            }
+            _ => {}
+        }
+    }
+
+    fn process_ack(&mut self, packet: Box<UcpPacket>) {
+        if packet.cmd == CMD_ACK && packet.payload % 8 == 0 {
+            let mut offset = packet.payload_start();
+            let end_offset = packet.payload_offset();
+
+            while offset + 8 <= end_offset {
+                let seq = packet.parse_u32(&mut offset);
+                let timestamp = packet.parse_u32(&mut offset);
+                self.process_an_ack(seq, timestamp);
+            }
+        }
+    }
+
+    fn process_data(&mut self, packet: Box<UcpPacket>) {
 
     }
 
-    fn process_ack(&mut self, seq: u32, timestamp: u32) -> bool {
+    fn process_syn_ack(&mut self, packet: Box<UcpPacket>) {
+        if packet.cmd == CMD_SYN_ACK && packet.payload == 8 {
+            let mut offset = packet.payload_start();
+            let seq = packet.parse_u32(&mut offset);
+            let timestamp = packet.parse_u32(&mut offset);
+
+            let mut ack = self.new_ack_packet();
+            ack.payload_write_u32(packet.seq);
+            ack.payload_write_u32(packet.timestamp);
+            self.send_packet_directly(&mut ack);
+
+            match self.state {
+                UcpState::CONNECTING => {
+                    if self.process_an_ack(seq, timestamp) {
+                        self.state = UcpState::ESTABLISHED;
+                    }
+                },
+                _ => {}
+            }
+        }
+    }
+
+    fn process_heartbeat(&mut self, packet: Box<UcpPacket>) {
+
+    }
+
+    fn process_heartbeat_ack(&mut self, packet: Box<UcpPacket>) {
+
+    }
+
+    fn process_an_ack(&mut self, seq: u32, timestamp: u32) -> bool {
         for i in 0 .. self.send_queue.len() {
             if self.send_queue[i].seq == seq {
                 let rtt = self.timestamp() - timestamp;
