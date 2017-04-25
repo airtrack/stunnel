@@ -189,13 +189,15 @@ struct UcpStreamImpl {
     socket: UdpSocket,
     remote_addr: SocketAddr,
     initial_time: Timespec,
+    alive_time: Timespec,
+    heartbeat: Timespec,
     state: UcpState,
 
     send_queue: UcpPacketQueue,
     recv_queue: UcpPacketQueue,
     send_buffer: UcpPacketQueue,
 
-    ack_list: Vec<u32>,
+    ack_list: Vec<(u32, u32)>,
     session_id: u32,
     local_window: u32,
     remote_window: u32,
@@ -213,6 +215,8 @@ impl UcpStreamImpl {
             socket: socket,
             remote_addr: remote_addr,
             initial_time: get_time(),
+            alive_time: get_time(),
+            heartbeat: get_time(),
             state: UcpState::NONE,
 
             send_queue: UcpPacketQueue::new(),
@@ -337,10 +341,10 @@ impl UcpStreamImpl {
                 self.process_syn_ack(packet);
             },
             CMD_HEARTBEAT => {
-                self.process_heartbeat(packet);
+                self.process_heartbeat();
             },
             CMD_HEARTBEAT_ACK => {
-                self.process_heartbeat_ack(packet);
+                self.process_heartbeat_ack();
             }
             _ => {}
         }
@@ -360,7 +364,32 @@ impl UcpStreamImpl {
     }
 
     fn process_data(&mut self, packet: Box<UcpPacket>) {
+        let max_seq = self.una + self.local_window;
+        let max_seq_diff = (packet.seq - max_seq) as i32;
+        if max_seq_diff > 0 {
+            return
+        }
 
+        self.ack_list.push((packet.seq, packet.timestamp));
+
+        let una_diff = (packet.seq - self.una) as i32;
+        if una_diff <= 0 {
+            return
+        }
+
+        let mut pos = 0;
+        for i in 0 .. self.recv_queue.len() {
+            let seq_diff = (packet.seq - self.recv_queue[i].seq) as i32;
+
+            if seq_diff < 0 {
+                pos = i;
+                break
+            } else if seq_diff == 0 {
+                return
+            }
+        }
+
+        self.recv_queue.insert(pos, packet);
     }
 
     fn process_syn_ack(&mut self, packet: Box<UcpPacket>) {
@@ -369,7 +398,7 @@ impl UcpStreamImpl {
             let seq = packet.parse_u32(&mut offset);
             let timestamp = packet.parse_u32(&mut offset);
 
-            let mut ack = self.new_ack_packet();
+            let mut ack = self.new_noseq_packet(CMD_ACK);
             ack.payload_write_u32(packet.seq);
             ack.payload_write_u32(packet.timestamp);
             self.send_packet_directly(&mut ack);
@@ -385,12 +414,13 @@ impl UcpStreamImpl {
         }
     }
 
-    fn process_heartbeat(&mut self, packet: Box<UcpPacket>) {
-
+    fn process_heartbeat(&mut self) {
+        let mut heartbeat_ack = self.new_noseq_packet(CMD_HEARTBEAT_ACK);
+        self.send_packet_directly(&mut heartbeat_ack);
     }
 
-    fn process_heartbeat_ack(&mut self, packet: Box<UcpPacket>) {
-
+    fn process_heartbeat_ack(&mut self) {
+        self.alive_time = get_time();
     }
 
     fn process_an_ack(&mut self, seq: u32, timestamp: u32) -> bool {
@@ -419,14 +449,14 @@ impl UcpStreamImpl {
         packet
     }
 
-    fn new_ack_packet(&mut self) -> Box<UcpPacket> {
+    fn new_noseq_packet(&mut self, cmd: u8) -> Box<UcpPacket> {
         let mut packet = Box::new(UcpPacket::new());
 
         packet.session_id = self.session_id;
         packet.timestamp = self.timestamp();
         packet.window = self.local_window;
         packet.una = self.una;
-        packet.cmd = CMD_ACK;
+        packet.cmd = cmd;
 
         packet
     }
