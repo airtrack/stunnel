@@ -1,6 +1,7 @@
 use std::net::{ UdpSocket, SocketAddr };
 use std::collections::{ VecDeque, HashMap };
 use std::cell::RefCell;
+use std::cmp::min;
 use std::io::Error;
 use std::rc::Rc;
 use std::str::FromStr;
@@ -25,6 +26,7 @@ struct UcpPacket {
     buf: [u8; 1400],
     size: usize,
     payload: u16,
+    read_pos: usize,
 
     session_id: u32,
     timestamp: u32,
@@ -41,6 +43,7 @@ impl UcpPacket {
             buf: [0; 1400],
             size: 0,
             payload: 0,
+            read_pos: 0,
             session_id: 0,
             timestamp: 0,
             window: 0,
@@ -57,6 +60,7 @@ impl UcpPacket {
         }
 
         self.payload = (self.size - UCP_PACKET_META_SIZE) as u16;
+        self.read_pos = UCP_PACKET_META_SIZE;
 
         let mut offset = 4;
         self.session_id = self.parse_u32(&mut offset);
@@ -145,10 +149,6 @@ impl UcpPacket {
         self.buf.len() - self.payload as usize - UCP_PACKET_META_SIZE
     }
 
-    fn payload_start(&self) -> isize {
-        UCP_PACKET_META_SIZE as isize
-    }
-
     fn payload_offset(&self) -> isize {
         (self.payload as usize + UCP_PACKET_META_SIZE) as isize
     }
@@ -173,6 +173,33 @@ impl UcpPacket {
         } else {
             false
         }
+    }
+
+    fn payload_remaining(&self) -> usize {
+        self.size - self.read_pos
+    }
+
+    fn payload_read_u32(&mut self) -> u32 {
+        if self.read_pos + 4 >= self.size {
+            panic!("Out of range when read u32 from {}", self.read_pos);
+        }
+
+        let mut offset = self.read_pos as isize;
+        let u = self.parse_u32(&mut offset);
+        self.read_pos = offset as usize;
+        u
+    }
+
+    fn payload_read_slice(&mut self, buf: &mut [u8]) -> usize {
+        let size = min(self.payload_remaining(), buf.len());
+        let end_pos = self.read_pos + size;
+
+        if size > 0 {
+            buf.copy_from_slice(&self.buf[self.read_pos..end_pos]);
+            self.read_pos = end_pos;
+        }
+
+        size
     }
 }
 
@@ -245,12 +272,63 @@ impl UcpStreamImpl {
         self.on_readable = Some(Box::new(cb));
     }
 
-    fn send(&self, buf: &[u8]) {
+    fn send(&mut self, buf: &[u8]) {
+        let mut pos = 0;
 
+        if let Some(packet) = self.send_buffer.back_mut() {
+            let remain = min(packet.remaining_load(), buf.len());
+            if remain > 0 {
+                packet.payload_write_slice(&buf[0..remain]);
+            }
+
+            pos = remain;
+        }
+
+        if pos < buf.len() {
+            self.make_packet_send(&buf[pos..]);
+        }
     }
 
-    fn recv(&self, buf: &mut [u8]) -> usize {
-        0
+    fn make_packet_send(&mut self, buf: &[u8]) {
+        let buf_len = buf.len();
+
+        let mut pos = 0;
+        while pos < buf_len {
+            let mut packet = self.new_packet(CMD_DATA);
+            let size = min(packet.remaining_load(), buf_len - pos);
+            let end_pos = pos + size;
+
+            packet.payload_write_slice(&buf[pos..end_pos]);
+            self.send_packet(packet);
+
+            pos = end_pos;
+        }
+    }
+
+    fn recv(&mut self, buf: &mut [u8]) -> usize {
+        let mut size = 0;
+
+        while size < buf.len() && !self.recv_queue.is_empty() {
+            let seq = self.una + 1;
+
+            if let Some(packet) = self.recv_queue.front_mut() {
+                if seq != packet.seq {
+                    break
+                }
+
+                size += packet.payload_read_slice(&mut buf[size..]);
+            }
+
+            let no_remain_payload = self.recv_queue.front().map(
+                |packet| packet.payload_remaining() == 0).unwrap();
+
+            if no_remain_payload {
+                self.recv_queue.pop_front();
+                self.una = seq;
+            }
+        }
+
+        size
     }
 
     fn update(&self) {
@@ -313,11 +391,10 @@ impl UcpStreamImpl {
         }
     }
 
-    fn process_state_accepting(&mut self, packet: Box<UcpPacket>) {
+    fn process_state_accepting(&mut self, mut packet: Box<UcpPacket>) {
         if packet.cmd == CMD_ACK && packet.payload == 8 {
-            let mut offset = packet.payload_start();
-            let seq = packet.parse_u32(&mut offset);
-            let timestamp = packet.parse_u32(&mut offset);
+            let seq = packet.payload_read_u32();
+            let timestamp = packet.payload_read_u32();
 
             if self.process_an_ack(seq, timestamp) {
                 self.state = UcpState::ESTABLISHED;
@@ -350,14 +427,11 @@ impl UcpStreamImpl {
         }
     }
 
-    fn process_ack(&mut self, packet: Box<UcpPacket>) {
+    fn process_ack(&mut self, mut packet: Box<UcpPacket>) {
         if packet.cmd == CMD_ACK && packet.payload % 8 == 0 {
-            let mut offset = packet.payload_start();
-            let end_offset = packet.payload_offset();
-
-            while offset + 8 <= end_offset {
-                let seq = packet.parse_u32(&mut offset);
-                let timestamp = packet.parse_u32(&mut offset);
+            while packet.payload_remaining() > 0 {
+                let seq = packet.payload_read_u32();
+                let timestamp = packet.payload_read_u32();
                 self.process_an_ack(seq, timestamp);
             }
         }
@@ -392,11 +466,10 @@ impl UcpStreamImpl {
         self.recv_queue.insert(pos, packet);
     }
 
-    fn process_syn_ack(&mut self, packet: Box<UcpPacket>) {
+    fn process_syn_ack(&mut self, mut packet: Box<UcpPacket>) {
         if packet.cmd == CMD_SYN_ACK && packet.payload == 8 {
-            let mut offset = packet.payload_start();
-            let seq = packet.parse_u32(&mut offset);
-            let timestamp = packet.parse_u32(&mut offset);
+            let seq = packet.payload_read_u32();
+            let timestamp = packet.payload_read_u32();
 
             let mut ack = self.new_noseq_packet(CMD_ACK);
             ack.payload_write_u32(packet.seq);
@@ -471,7 +544,9 @@ impl UcpStreamImpl {
     }
 
     fn send_packet(&mut self, mut packet: Box<UcpPacket>) {
-        if self.send_queue.len() < self.remote_window as usize {
+        if !self.send_buffer.is_empty() {
+            self.send_buffer.push_back(packet);
+        } else if self.send_queue.len() < self.remote_window as usize {
             self.send_packet_directly(&mut packet);
             self.send_queue.push_back(packet);
         } else {
@@ -505,11 +580,11 @@ impl UcpStream {
     }
 
     pub fn send(&self, buf: &[u8]) {
-        self.ucp_impl.borrow().send(buf);
+        self.ucp_impl.borrow_mut().send(buf);
     }
 
     pub fn recv(&self, buf: &mut [u8]) -> usize {
-        self.ucp_impl.borrow().recv(buf)
+        self.ucp_impl.borrow_mut().recv(buf)
     }
 }
 
@@ -556,11 +631,11 @@ impl UcpClient {
         }
     }
 
-    pub fn send(&self, buf: &[u8]) {
+    pub fn send(&mut self, buf: &[u8]) {
         self.ucp.send(buf);
     }
 
-    pub fn recv(&self, buf: &mut [u8]) -> usize {
+    pub fn recv(&mut self, buf: &mut [u8]) -> usize {
         self.ucp.recv(buf)
     }
 
