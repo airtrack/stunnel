@@ -20,7 +20,8 @@ const CMD_HEARTBEAT_ACK: u8 = 133;
 const UCP_PACKET_META_SIZE: usize = 29;
 const DEFAULT_WINDOW: u32 = 256;
 const DEFAULT_RTO: u32 = 100;
-
+const HEARTBEAT_INTERVAL_MILLIS: i64 = 5000;
+const UCP_STREAM_BROKEN_MILLIS: i64 = 60000;
 
 struct UcpPacket {
     buf: [u8; 1400],
@@ -233,7 +234,7 @@ struct UcpStreamImpl {
     rto: u32,
 
     on_update: Option<Box<FnMut ()>>,
-    on_readable: Option<Box<FnMut ()>>
+    on_broken: Option<Box<FnMut ()>>
 }
 
 impl UcpStreamImpl {
@@ -258,7 +259,7 @@ impl UcpStreamImpl {
             seq: 0, una: 0,
 
             on_update: None,
-            on_readable: None
+            on_broken: None
         }
     }
 
@@ -267,9 +268,9 @@ impl UcpStreamImpl {
         self.on_update = Some(Box::new(cb));
     }
 
-    fn set_on_readable<CB>(&mut self, cb: CB)
+    fn set_on_broken<CB>(&mut self, cb: CB)
         where CB: 'static + FnMut () {
-        self.on_readable = Some(Box::new(cb));
+        self.on_broken = Some(Box::new(cb));
     }
 
     fn send(&mut self, buf: &[u8]) {
@@ -331,8 +332,95 @@ impl UcpStreamImpl {
         size
     }
 
-    fn update(&self) {
+    fn update(&mut self) {
+        if self.check_if_alive() {
+            self.do_heartbeat();
+            self.send_ack_list();
+            self.timeout_resend();
+            self.send_pending_packets();
+            (self.on_update.as_mut().unwrap())();
+        }
+    }
 
+    fn check_if_alive(&mut self) -> bool {
+        let now = get_time();
+        let interval = (now - self.alive_time).num_milliseconds();
+        let alive = interval < UCP_STREAM_BROKEN_MILLIS;
+
+        if !alive {
+            (self.on_broken.as_mut().unwrap())();
+        }
+
+        alive
+    }
+
+    fn do_heartbeat(&mut self) {
+        let now = get_time();
+        let interval = (now - self.heartbeat).num_milliseconds();
+
+        if interval >= HEARTBEAT_INTERVAL_MILLIS {
+            let mut heartbeat = self.new_noseq_packet(CMD_HEARTBEAT);
+            self.send_packet_directly(&mut heartbeat);
+            self.heartbeat = now;
+        }
+    }
+
+    fn send_ack_list(&mut self) {
+        if self.ack_list.is_empty() {
+            return
+        }
+
+        let mut packet = self.new_noseq_packet(CMD_ACK);
+
+        for &(seq, timestamp) in self.ack_list.iter() {
+            if packet.remaining_load() < 8 {
+                self.send_packet_directly(&mut packet);
+                packet = self.new_noseq_packet(CMD_ACK);
+            }
+
+            packet.payload_write_u32(seq);
+            packet.payload_write_u32(timestamp);
+        }
+
+        self.send_packet_directly(&mut packet);
+        self.ack_list.clear();
+    }
+
+    fn timeout_resend(&mut self) {
+        let now = self.timestamp();
+
+        for packet in self.send_queue.iter_mut() {
+            let interval = now - packet.timestamp;
+
+            if interval >= self.rto {
+                packet.window = self.local_window;
+                packet.una = self.una;
+                packet.timestamp = now;
+                packet.xmit += 1;
+                packet.pack();
+
+                let _ = self.socket.send_to(
+                    packet.packed_buffer(), self.remote_addr);
+            }
+        }
+    }
+
+    fn send_pending_packets(&mut self) {
+        let now = self.timestamp();
+        let window = self.remote_window as usize;
+
+        while self.send_queue.len() < window {
+            if let Some(mut packet) = self.send_buffer.pop_front() {
+                packet.window = self.local_window;
+                packet.una = self.una;
+                packet.timestamp = now;
+
+                self.send_packet_directly(&mut packet);
+                self.send_queue.push_back(packet);
+            } else {
+                break
+            }
+        }
     }
 
     fn process_packet(&mut self, packet: Box<UcpPacket>,
@@ -363,6 +451,7 @@ impl UcpStreamImpl {
         self.state = UcpState::ACCEPTING;
         self.session_id = packet.session_id;
         self.remote_window = packet.window;
+        self.una = packet.seq;
 
         let mut syn_ack = self.new_packet(CMD_SYN_ACK);
         syn_ack.payload_write_u32(packet.seq);
@@ -407,6 +496,8 @@ impl UcpStreamImpl {
     }
 
     fn process_state_established(&mut self, packet: Box<UcpPacket>) {
+        self.process_una(packet.una);
+
         match packet.cmd {
             CMD_ACK => {
                 self.process_ack(packet);
@@ -424,6 +515,19 @@ impl UcpStreamImpl {
                 self.process_heartbeat_ack();
             }
             _ => {}
+        }
+    }
+
+    fn process_una(&mut self, una: u32) {
+        while !self.send_queue.is_empty() {
+            let diff = self.send_queue.front().map(
+                |packet| (packet.seq - una) as i32).unwrap();
+
+            if diff <= 0 {
+                self.send_queue.pop_front();
+            } else {
+                break
+            }
         }
     }
 
@@ -480,6 +584,7 @@ impl UcpStreamImpl {
                 UcpState::CONNECTING => {
                     if self.process_an_ack(seq, timestamp) {
                         self.state = UcpState::ESTABLISHED;
+                        self.una = packet.seq;
                     }
                 },
                 _ => {}
@@ -497,10 +602,11 @@ impl UcpStreamImpl {
     }
 
     fn process_an_ack(&mut self, seq: u32, timestamp: u32) -> bool {
+        let rtt = self.timestamp() - timestamp;
+        self.rto = (self.rto + rtt) / 2;
+
         for i in 0 .. self.send_queue.len() {
             if self.send_queue[i].seq == seq {
-                let rtt = self.timestamp() - timestamp;
-                self.rto = (self.rto + rtt) / 2;
                 self.send_queue.remove(i);
                 return true
             }
@@ -522,7 +628,7 @@ impl UcpStreamImpl {
         packet
     }
 
-    fn new_noseq_packet(&mut self, cmd: u8) -> Box<UcpPacket> {
+    fn new_noseq_packet(&self, cmd: u8) -> Box<UcpPacket> {
         let mut packet = Box::new(UcpPacket::new());
 
         packet.session_id = self.session_id;
@@ -574,9 +680,9 @@ impl UcpStream {
         self.ucp_impl.borrow_mut().set_on_update(cb);
     }
 
-    pub fn set_on_readable<CB>(&mut self, cb: CB)
+    pub fn set_on_broken<CB>(&mut self, cb: CB)
         where CB: 'static + FnMut () {
-        self.ucp_impl.borrow_mut().set_on_readable(cb);
+        self.ucp_impl.borrow_mut().set_on_broken(cb);
     }
 
     pub fn send(&self, buf: &[u8]) {
@@ -612,9 +718,9 @@ impl UcpClient {
         self.ucp.set_on_update(cb);
     }
 
-    pub fn set_on_readable<CB>(&mut self, cb: CB)
+    pub fn set_on_broken<CB>(&mut self, cb: CB)
         where CB: 'static + FnMut () {
-        self.ucp.set_on_readable(cb);
+        self.ucp.set_on_broken(cb);
     }
 
     pub fn run(&mut self) {
@@ -709,7 +815,7 @@ impl UcpServer {
         }
 
         for (_, ucp) in self.ucp_map.iter() {
-            ucp.borrow().update();
+            ucp.borrow_mut().update();
         }
 
         self.update_time = now;
