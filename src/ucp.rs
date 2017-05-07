@@ -1,5 +1,5 @@
-use std::net::{ UdpSocket, SocketAddr };
-use std::collections::{ VecDeque, HashMap };
+use std::net::{UdpSocket, SocketAddr};
+use std::collections::{VecDeque, HashMap};
 use std::cell::RefCell;
 use std::cmp::min;
 use std::io::Error;
@@ -9,7 +9,7 @@ use std::time::Duration;
 use std::vec::Vec;
 use crc::crc32;
 use rand::random;
-use time::{ Timespec, get_time };
+use time::{Timespec, get_time};
 
 const CMD_SYN: u8 = 128;
 const CMD_SYN_ACK: u8 = 129;
@@ -233,8 +233,8 @@ struct UcpStreamImpl {
     una: u32,
     rto: u32,
 
-    on_update: Option<Box<FnMut ()>>,
-    on_broken: Option<Box<FnMut ()>>
+    on_update: Option<Box<FnMut() -> bool>>,
+    on_broken: Option<Box<FnMut()>>
 }
 
 impl UcpStreamImpl {
@@ -264,12 +264,12 @@ impl UcpStreamImpl {
     }
 
     fn set_on_update<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut () {
+        where CB: 'static + FnMut() -> bool {
         self.on_update = Some(Box::new(cb));
     }
 
     fn set_on_broken<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut () {
+        where CB: 'static + FnMut() {
         self.on_broken = Some(Box::new(cb));
     }
 
@@ -340,10 +340,10 @@ impl UcpStreamImpl {
             self.send_ack_list();
             self.timeout_resend();
             self.send_pending_packets();
-            (self.on_update.as_mut().unwrap())();
+            (self.on_update.as_mut().unwrap())()
+        } else {
+            alive
         }
-
-        alive
     }
 
     fn check_if_alive(&mut self) -> bool {
@@ -680,12 +680,12 @@ impl UcpStream {
     }
 
     pub fn set_on_update<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut () {
+        where CB: 'static + FnMut() -> bool {
         self.ucp_impl.borrow_mut().set_on_update(cb);
     }
 
     pub fn set_on_broken<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut () {
+        where CB: 'static + FnMut() {
         self.ucp_impl.borrow_mut().set_on_broken(cb);
     }
 
@@ -718,12 +718,12 @@ impl UcpClient {
     }
 
     pub fn set_on_update<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut () {
+        where CB: 'static + FnMut() -> bool {
         self.ucp.set_on_update(cb);
     }
 
     pub fn set_on_broken<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut () {
+        where CB: 'static + FnMut() {
         self.ucp.set_on_broken(cb);
     }
 
@@ -737,7 +737,9 @@ impl UcpClient {
                 self.process_packet(packet, remote_addr);
             }
 
-            self.update();
+            if !self.update() {
+                break
+            }
         }
     }
 
@@ -749,14 +751,14 @@ impl UcpClient {
         self.ucp.recv(buf)
     }
 
-    fn update(&mut self) {
+    fn update(&mut self) -> bool {
         let now = get_time();
         if (now - self.update_time).num_milliseconds() < 10 {
-            return
+            return true
         }
 
-        self.ucp.update();
         self.update_time = now;
+        self.ucp.update()
     }
 
     fn process_packet(&mut self, mut packet: Box<UcpPacket>,
@@ -775,7 +777,7 @@ pub struct UcpServer {
     socket: UdpSocket,
     ucp_map: UcpStreamMap,
     broken_ucp: Vec<SocketAddr>,
-    on_new_ucp: Option<Box<FnMut (UcpStream)>>,
+    on_new_ucp: Option<Box<FnMut(UcpStream)>>,
     update_time: Timespec
 }
 
@@ -796,7 +798,7 @@ impl UcpServer {
     }
 
     pub fn set_on_new_ucp_stream<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut (UcpStream) {
+        where CB: 'static + FnMut(UcpStream) {
         self.on_new_ucp = Some(Box::new(cb));
     }
 
