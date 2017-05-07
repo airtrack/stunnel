@@ -332,14 +332,18 @@ impl UcpStreamImpl {
         size
     }
 
-    fn update(&mut self) {
-        if self.check_if_alive() {
+    fn update(&mut self) -> bool {
+        let alive = self.check_if_alive();
+
+        if alive {
             self.do_heartbeat();
             self.send_ack_list();
             self.timeout_resend();
             self.send_pending_packets();
             (self.on_update.as_mut().unwrap())();
         }
+
+        alive
     }
 
     fn check_if_alive(&mut self) -> bool {
@@ -770,6 +774,7 @@ type UcpStreamMap = HashMap<SocketAddr, Rc<RefCell<UcpStreamImpl>>>;
 pub struct UcpServer {
     socket: UdpSocket,
     ucp_map: UcpStreamMap,
+    broken_ucp: Vec<SocketAddr>,
     on_new_ucp: Option<Box<FnMut (UcpStream)>>,
     update_time: Timespec
 }
@@ -782,6 +787,7 @@ impl UcpServer {
                     Some(Duration::from_millis(10))).unwrap();
                 Ok(UcpServer { socket: socket,
                     ucp_map: UcpStreamMap::new(),
+                    broken_ucp: Vec::new(),
                     on_new_ucp: None,
                     update_time: get_time() })
             },
@@ -814,10 +820,17 @@ impl UcpServer {
             return
         }
 
-        for (_, ucp) in self.ucp_map.iter() {
-            ucp.borrow_mut().update();
+        for (key, ucp) in self.ucp_map.iter() {
+            if !ucp.borrow_mut().update() {
+                self.broken_ucp.push(key.clone());
+            }
         }
 
+        for key in self.broken_ucp.iter() {
+            self.ucp_map.remove(key);
+        }
+
+        self.broken_ucp.clear();
         self.update_time = now;
     }
 
