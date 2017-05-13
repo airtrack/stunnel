@@ -1,16 +1,19 @@
-use std::sync::mpsc::sync_channel;
-use std::sync::mpsc::channel;
-use std::sync::mpsc::SyncSender;
-use std::sync::mpsc::Sender;
-use std::sync::mpsc::Receiver;
 use std::thread;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::TcpStream;
-use std::vec::Vec;
 use std::time::Duration;
+use std::rc::Rc;
+use std::vec::Vec;
+use std::sync::mpsc::{
+    sync_channel, channel,
+    SyncSender, Sender, Receiver
+};
+
 use time;
 use super::timer::Timer;
 use super::cryptor::Cryptor;
+use super::ucp::{UcpClient, UcpStream};
 use super::tcp::{Tcp, TcpError};
 use super::protocol::{
     VERIFY_DATA, cs, sc,
@@ -47,6 +50,11 @@ pub struct Tunnel {
     core_tx: SyncSender<TunnelMsg>,
 }
 
+pub struct UcpTunnel {
+    id: u32,
+    core_tx: SyncSender<TunnelMsg>,
+}
+
 pub struct TunnelWritePort {
     id: u32,
     tx: SyncSender<TunnelMsg>,
@@ -77,6 +85,33 @@ impl Tunnel {
         });
 
         Tunnel { id: 1, core_tx: tx2 }
+    }
+
+    pub fn open_port(&mut self) -> (TunnelWritePort, TunnelReadPort) {
+        let core_tx1 = self.core_tx.clone();
+        let core_tx2 = self.core_tx.clone();
+        let id = self.id;
+        self.id += 1;
+
+        let (tx, rx) = channel();
+        let _ = self.core_tx.send(TunnelMsg::CSOpenPort(id, tx));
+
+        (TunnelWritePort { id: id, tx: core_tx1 },
+         TunnelReadPort { id: id, tx: core_tx2, rx: rx })
+    }
+}
+
+impl UcpTunnel {
+    pub fn new(tid: u32, server_addr: String, key: Vec<u8>) -> UcpTunnel {
+        let (tx, rx) = sync_channel(10000);
+        let tx2 = tx.clone();
+
+        thread::spawn(move || {
+            ucp_tunnel_core_task(tid, server_addr, key,
+                                 Rc::new(rx), Rc::new(tx));
+        });
+
+        UcpTunnel { id: 1, core_tx: tx2 }
     }
 
     pub fn open_port(&mut self) -> (TunnelWritePort, TunnelReadPort) {
@@ -184,6 +219,50 @@ fn tunnel_recv_loop(key: &Vec<u8>, core_tx: &SyncSender<TunnelMsg>,
     }
 
     Ok(())
+}
+
+struct UcpTask {
+    core_rx: Rc<Receiver<TunnelMsg>>,
+    port_map: Rc<RefCell<PortMap>>,
+    encryptor: Cryptor,
+    decryptor: Cryptor
+}
+
+impl UcpTask {
+    fn new(key: &[u8], core_rx: Rc<Receiver<TunnelMsg>>,
+           port_map: Rc<RefCell<PortMap>>) -> UcpTask {
+        let encryptor = Cryptor::new(key);
+        let decryptor = Cryptor::new(key);
+
+        UcpTask {
+            core_rx: core_rx, port_map: port_map,
+            encryptor: encryptor, decryptor: decryptor
+        }
+    }
+
+    fn update(&mut self, ucp: &mut UcpStream) -> bool {
+        true
+    }
+}
+
+fn ucp_tunnel_core_task(tid: u32, server_addr: String, key: Vec<u8>,
+                        core_rx: Rc<Receiver<TunnelMsg>>,
+                        core_tx: Rc<SyncSender<TunnelMsg>>) {
+    loop {
+        let mut ucp_client = UcpClient::connect(&server_addr[..]);
+        let port_map = Rc::new(RefCell::new(PortMap::new()));
+        let mut ucp_task = UcpTask::new(
+            &key[..], core_rx.clone(), port_map.clone());
+
+        ucp_client.set_on_update(move |ucp| { ucp_task.update(ucp) });
+        ucp_client.set_on_broken(|| {}); 
+        ucp_client.run();
+
+        info!("tunnel {} broken", tid);
+        for (_, value) in port_map.borrow().iter() {
+            let _ = value.tx.send(TunnelPortMsg::ClosePort);
+        }
+    }
 }
 
 fn tunnel_core_task(tid: u32, server_addr: String, key: Vec<u8>,

@@ -213,7 +213,7 @@ enum UcpState {
     ESTABLISHED
 }
 
-struct UcpStreamImpl {
+pub struct UcpStream {
     socket: UdpSocket,
     remote_addr: SocketAddr,
     initial_time: Timespec,
@@ -233,13 +233,13 @@ struct UcpStreamImpl {
     una: u32,
     rto: u32,
 
-    on_update: Option<Box<FnMut() -> bool>>,
+    on_update: Rc<RefCell<Option<Box<FnMut(&mut UcpStream) -> bool>>>>,
     on_broken: Option<Box<FnMut()>>
 }
 
-impl UcpStreamImpl {
-    fn new(socket: UdpSocket, remote_addr: SocketAddr) -> UcpStreamImpl {
-        UcpStreamImpl {
+impl UcpStream {
+    fn new(socket: UdpSocket, remote_addr: SocketAddr) -> UcpStream {
+        UcpStream {
             socket: socket,
             remote_addr: remote_addr,
             initial_time: get_time(),
@@ -258,22 +258,22 @@ impl UcpStreamImpl {
             session_id: 0,
             seq: 0, una: 0,
 
-            on_update: None,
+            on_update: Rc::new(RefCell::new(None)),
             on_broken: None
         }
     }
 
-    fn set_on_update<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut() -> bool {
-        self.on_update = Some(Box::new(cb));
+    pub fn set_on_update<CB>(&mut self, cb: CB)
+        where CB: 'static + FnMut(&mut UcpStream) -> bool {
+        self.on_update = Rc::new(RefCell::new(Some(Box::new(cb))));
     }
 
-    fn set_on_broken<CB>(&mut self, cb: CB)
+    pub fn set_on_broken<CB>(&mut self, cb: CB)
         where CB: 'static + FnMut() {
         self.on_broken = Some(Box::new(cb));
     }
 
-    fn send(&mut self, buf: &[u8]) {
+    pub fn send(&mut self, buf: &[u8]) {
         let mut pos = 0;
 
         if let Some(packet) = self.send_buffer.back_mut() {
@@ -290,23 +290,7 @@ impl UcpStreamImpl {
         }
     }
 
-    fn make_packet_send(&mut self, buf: &[u8]) {
-        let buf_len = buf.len();
-
-        let mut pos = 0;
-        while pos < buf_len {
-            let mut packet = self.new_packet(CMD_DATA);
-            let size = min(packet.remaining_load(), buf_len - pos);
-            let end_pos = pos + size;
-
-            packet.payload_write_slice(&buf[pos..end_pos]);
-            self.send_packet(packet);
-
-            pos = end_pos;
-        }
-    }
-
-    fn recv(&mut self, buf: &mut [u8]) -> usize {
+    pub fn recv(&mut self, buf: &mut [u8]) -> usize {
         let mut size = 0;
 
         while size < buf.len() && !self.recv_queue.is_empty() {
@@ -333,17 +317,18 @@ impl UcpStreamImpl {
     }
 
     fn update(&mut self) -> bool {
-        let alive = self.check_if_alive();
+        let mut alive = self.check_if_alive();
 
         if alive {
             self.do_heartbeat();
             self.send_ack_list();
             self.timeout_resend();
             self.send_pending_packets();
-            (self.on_update.as_mut().unwrap())()
-        } else {
-            alive
+            let on_update = self.on_update.clone();
+            alive = (on_update.borrow_mut().as_mut().unwrap())(self);
         }
+
+        alive
     }
 
     fn check_if_alive(&mut self) -> bool {
@@ -653,6 +638,22 @@ impl UcpStreamImpl {
         self.seq
     }
 
+    fn make_packet_send(&mut self, buf: &[u8]) {
+        let buf_len = buf.len();
+
+        let mut pos = 0;
+        while pos < buf_len {
+            let mut packet = self.new_packet(CMD_DATA);
+            let size = min(packet.remaining_load(), buf_len - pos);
+            let end_pos = pos + size;
+
+            packet.payload_write_slice(&buf[pos..end_pos]);
+            self.send_packet(packet);
+
+            pos = end_pos;
+        }
+    }
+
     fn send_packet(&mut self, mut packet: Box<UcpPacket>) {
         if !self.send_buffer.is_empty() {
             self.send_buffer.push_back(packet);
@@ -670,37 +671,9 @@ impl UcpStreamImpl {
     }
 }
 
-pub struct UcpStream {
-    ucp_impl: Rc<RefCell<UcpStreamImpl>>
-}
-
-impl UcpStream {
-    fn new(ucp_impl: Rc<RefCell<UcpStreamImpl>>) -> UcpStream {
-        UcpStream { ucp_impl: ucp_impl }
-    }
-
-    pub fn set_on_update<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut() -> bool {
-        self.ucp_impl.borrow_mut().set_on_update(cb);
-    }
-
-    pub fn set_on_broken<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut() {
-        self.ucp_impl.borrow_mut().set_on_broken(cb);
-    }
-
-    pub fn send(&self, buf: &[u8]) {
-        self.ucp_impl.borrow_mut().send(buf);
-    }
-
-    pub fn recv(&self, buf: &mut [u8]) -> usize {
-        self.ucp_impl.borrow_mut().recv(buf)
-    }
-}
-
 pub struct UcpClient {
     socket: UdpSocket,
-    ucp: UcpStreamImpl,
+    ucp: UcpStream,
     update_time: Timespec
 }
 
@@ -710,7 +683,7 @@ impl UcpClient {
         let remote_addr = SocketAddr::from_str(server_addr).unwrap();
 
         let socket2 = socket.try_clone().unwrap();
-        let mut ucp = UcpStreamImpl::new(socket2, remote_addr);
+        let mut ucp = UcpStream::new(socket2, remote_addr);
         ucp.connecting();
 
         socket.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
@@ -718,7 +691,7 @@ impl UcpClient {
     }
 
     pub fn set_on_update<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut() -> bool {
+        where CB: 'static + FnMut(&mut UcpStream) -> bool {
         self.ucp.set_on_update(cb);
     }
 
@@ -743,14 +716,6 @@ impl UcpClient {
         }
     }
 
-    pub fn send(&mut self, buf: &[u8]) {
-        self.ucp.send(buf);
-    }
-
-    pub fn recv(&mut self, buf: &mut [u8]) -> usize {
-        self.ucp.recv(buf)
-    }
-
     fn update(&mut self) -> bool {
         let now = get_time();
         if (now - self.update_time).num_milliseconds() < 10 {
@@ -771,13 +736,13 @@ impl UcpClient {
     }
 }
 
-type UcpStreamMap = HashMap<SocketAddr, Rc<RefCell<UcpStreamImpl>>>;
+type UcpStreamMap = HashMap<SocketAddr, Rc<RefCell<UcpStream>>>;
 
 pub struct UcpServer {
     socket: UdpSocket,
     ucp_map: UcpStreamMap,
     broken_ucp: Vec<SocketAddr>,
-    on_new_ucp: Option<Box<FnMut(UcpStream)>>,
+    on_new_ucp: Option<Box<FnMut(&mut UcpStream)>>,
     update_time: Timespec
 }
 
@@ -798,7 +763,7 @@ impl UcpServer {
     }
 
     pub fn set_on_new_ucp_stream<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut(UcpStream) {
+        where CB: 'static + FnMut(&mut UcpStream) {
         self.on_new_ucp = Some(Box::new(cb));
     }
 
@@ -855,14 +820,13 @@ impl UcpServer {
     fn new_ucp_stream(&mut self, packet: Box<UcpPacket>,
                       remote_addr: SocketAddr) {
         let socket = self.socket.try_clone().unwrap();
-        let ucp_impl = Rc::new(RefCell::new(
-                UcpStreamImpl::new(socket, remote_addr)));
-        let ucp = UcpStream::new(ucp_impl.clone());
+        let mut ucp = UcpStream::new(socket, remote_addr);
 
         if let Some(ref mut on_new_ucp) = self.on_new_ucp {
-            on_new_ucp(ucp);
+            on_new_ucp(&mut ucp);
         }
 
+        let ucp_impl = Rc::new(RefCell::new(ucp));
         let _ = self.ucp_map.insert(remote_addr, ucp_impl.clone());
         ucp_impl.borrow_mut().process_packet(packet, remote_addr);
     }
