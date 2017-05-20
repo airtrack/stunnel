@@ -307,7 +307,7 @@ fn tunnel_loop(key: &Vec<u8>, core_tx: &SyncSender<TunnelMsg>,
     let mut encryptor = Cryptor::new(&key[..]);
     try!(stream.write(encryptor.ctr_as_slice()));
 
-    let timer = Timer::new(HEARTBEAT_INTERVAL_MS);
+    let timer = Timer::new(HEARTBEAT_INTERVAL_MS as u32);
     let mut alive_time = time::get_time();
 
     loop {

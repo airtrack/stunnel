@@ -22,7 +22,7 @@ mod protocol {
 
     pub const VERIFY_DATA: [u8; 8] =
         [0xF0u8, 0xEF, 0xE, 0x2, 0xAE, 0xBC, 0x8C, 0x78];
-    pub const HEARTBEAT_INTERVAL_MS: u32 = 5000;
+    pub const HEARTBEAT_INTERVAL_MS: i64 = 5000;
     pub const ALIVE_TIMEOUT_TIME_MS: i64 = 60000;
 
     pub mod cs {
@@ -103,5 +103,31 @@ mod protocol {
 
     pub fn pack_cs_close_port_msg(id: u32) -> [u8; 5] {
         pack_cmd_id_msg(cs::CLOSE_PORT, id)
+    }
+
+    pub fn read_cmd(buf: &[u8]) -> u8 {
+        buf[0]
+    }
+
+    pub fn read_id(buf: &[u8]) -> u32 {
+        let id = unsafe { *(buf.as_ptr().offset(1) as *const u32) };
+        u32::from_be(id)
+    }
+
+    pub fn read_id_len(buf: &[u8]) -> (u32, usize) {
+        let id = unsafe { *(buf.as_ptr().offset(1) as *const u32) };
+        let len = unsafe { *(buf.as_ptr().offset(5) as *const u32) };
+        (u32::from_be(id), u32::from_be(len) as usize)
+    }
+
+    pub fn get_total_packet_len(buf: &[u8]) -> usize {
+        let cmd = read_cmd(buf);
+        let (_, len) = read_id_len(buf);
+
+        if cmd == cs::CONNECT_DOMAIN_NAME {
+            len + 11
+        } else {
+            len + 9
+        }
     }
 }

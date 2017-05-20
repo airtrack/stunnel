@@ -15,7 +15,7 @@ use stunnel::logger;
 use stunnel::cryptor::Cryptor;
 use stunnel::tcp::{Tcp, TcpError};
 use stunnel::client::{
-    Tunnel, TunnelPortMsg,
+    Tunnel, TcpTunnel, TunnelPortMsg,
     TunnelWritePort, TunnelReadPort
 };
 use stunnel::socks5::{
@@ -112,7 +112,7 @@ fn run_tunnels(listen_addr: String, server_addr: String,
                count: u32, key: Vec<u8>) {
     let mut tunnels = Vec::new();
     for i in 0..count {
-        let tunnel = Tunnel::new(i, server_addr.clone(), key.clone());
+        let tunnel = TcpTunnel::new(i, server_addr.clone(), key.clone());
         tunnels.push(tunnel);
     }
 

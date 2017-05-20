@@ -7,6 +7,8 @@ use crypto::buffer::{
     RefReadBuffer, RefWriteBuffer, ReadBuffer, WriteBuffer, BufferResult
 };
 
+pub const CTR_SIZE: usize = 8;
+
 pub struct Cryptor {
     cryptor: CtrMode<Blowfish>,
     ctr: Vec<u8>,
@@ -33,7 +35,7 @@ impl Cryptor {
     }
 
     pub fn ctr_size() -> usize {
-        8
+        CTR_SIZE
     }
 
     pub fn ctr_as_slice(&self) -> &[u8] {
