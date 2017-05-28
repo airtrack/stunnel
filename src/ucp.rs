@@ -94,9 +94,10 @@ impl UcpPacket {
         self.write_u8(&mut offset, cmd);
 
         offset = 0;
+        self.size = self.payload as usize + UCP_PACKET_META_SIZE;
+
         let digest = crc32::checksum_ieee(&self.buf[4..self.size]);
         self.write_u32(&mut offset, digest);
-        self.size = self.payload as usize + UCP_PACKET_META_SIZE;
     }
 
     fn packed_buffer(&self) -> &[u8] {
@@ -133,7 +134,7 @@ impl UcpPacket {
     }
 
     fn is_legal(&self) -> bool {
-        self.size > UCP_PACKET_META_SIZE && self.is_crc32_correct()
+        self.size >= UCP_PACKET_META_SIZE && self.is_crc32_correct()
     }
 
     fn is_crc32_correct(&self) -> bool {
@@ -170,6 +171,7 @@ impl UcpPacket {
             let offset = self.payload_offset() as usize;
             let end = offset + buf.len();
             self.buf[offset..end].copy_from_slice(buf);
+            self.payload += buf.len() as u16;
             true
         } else {
             false
@@ -181,7 +183,7 @@ impl UcpPacket {
     }
 
     fn payload_read_u32(&mut self) -> u32 {
-        if self.read_pos + 4 >= self.size {
+        if self.read_pos + 4 > self.size {
             panic!("Out of range when read u32 from {}", self.read_pos);
         }
 
@@ -196,7 +198,7 @@ impl UcpPacket {
         let end_pos = self.read_pos + size;
 
         if size > 0 {
-            buf.copy_from_slice(&self.buf[self.read_pos..end_pos]);
+            buf[0..size].copy_from_slice(&self.buf[self.read_pos..end_pos]);
             self.read_pos = end_pos;
         }
 
@@ -550,14 +552,15 @@ impl UcpStream {
         }
 
         let mut pos = 0;
-        for i in 0 .. self.recv_queue.len() {
+        for i in 0..self.recv_queue.len() {
             let seq_diff = (packet.seq - self.recv_queue[i].seq) as i32;
 
-            if seq_diff < 0 {
-                pos = i;
-                break
-            } else if seq_diff == 0 {
+            if seq_diff == 0 {
                 return
+            } else if seq_diff < 0 {
+                break
+            } else {
+                pos += 1;
             }
         }
 
