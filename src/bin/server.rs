@@ -3,7 +3,7 @@ extern crate stunnel;
 
 use std::env;
 use std::net::TcpListener;
-use stunnel::server::Tunnel;
+use stunnel::server::TcpTunnel;
 use stunnel::cryptor::Cryptor;
 
 fn main() {
@@ -37,7 +37,7 @@ fn main() {
         let key2 = key.clone();
         match stream {
             Ok(stream) => {
-                Tunnel::new(key2, stream);
+                TcpTunnel::new(key2, stream);
             },
             Err(_) => {}
         }

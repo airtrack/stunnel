@@ -105,6 +105,32 @@ mod protocol {
         pack_cmd_id_msg(cs::CLOSE_PORT, id)
     }
 
+    pub fn pack_cs_heartbeat_msg() -> [u8; 1] {
+        let buf = [cs::HEARTBEAT];
+        buf
+    }
+
+    pub fn pack_sc_close_port_msg(id: u32) -> [u8; 5] {
+        pack_cmd_id_msg(sc::CLOSE_PORT, id)
+    }
+
+    pub fn pack_sc_shutdown_write_msg(id: u32) -> [u8; 5] {
+        pack_cmd_id_msg(sc::SHUTDOWN_WRITE, id)
+    }
+
+    pub fn pack_sc_connect_ok_msg(id: u32, data: &[u8]) -> Vec<u8> {
+        pack_cmd_id_data_msg(sc::CONNECT_OK, id, data)
+    }
+
+    pub fn pack_sc_data_msg(id: u32, data: &[u8]) -> Vec<u8> {
+        pack_cmd_id_data_msg(sc::DATA, id, data)
+    }
+
+    pub fn pack_sc_heartbeat_rsp_msg() -> [u8; 1] {
+        let buf = [sc::HEARTBEAT_RSP];
+        buf
+    }
+
     pub fn read_cmd(buf: &[u8]) -> u8 {
         buf[0]
     }
@@ -120,14 +146,17 @@ mod protocol {
         (u32::from_be(id), u32::from_be(len) as usize)
     }
 
-    pub fn get_total_packet_len(buf: &[u8]) -> usize {
-        let cmd = read_cmd(buf);
-        let (_, len) = read_id_len(buf);
+    pub fn read_domain_port(buf: &[u8]) -> u16 {
+        let total_len = get_total_packet_len(buf);
+        let port = unsafe {
+            let offset = (total_len - 2) as isize;
+            *(buf.as_ptr().offset(offset) as *const u16)
+        };
+        u16::from_be(port)
+    }
 
-        if cmd == cs::CONNECT_DOMAIN_NAME {
-            len + 11
-        } else {
-            len + 9
-        }
+    pub fn get_total_packet_len(buf: &[u8]) -> usize {
+        let (_, len) = read_id_len(buf);
+        len + 9
     }
 }

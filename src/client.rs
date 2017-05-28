@@ -201,8 +201,7 @@ impl UcpTask {
 
         let interval = cur_time - self.heartbeat_time;
         if interval.num_milliseconds() > HEARTBEAT_INTERVAL_MS {
-            let buf = [cs::HEARTBEAT];
-            ucp.send(&buf);
+            ucp.send(&pack_cs_heartbeat_msg());
             self.heartbeat_time = cur_time;
         }
         true
@@ -335,7 +334,7 @@ fn ucp_tunnel_core_task(tid: u32, server_addr: String, key: Vec<u8>,
             tid, key.clone(), port_map.clone(), core_rx.clone());
 
         ucp_client.set_on_update(move |ucp| { ucp_task.update(ucp) });
-        ucp_client.set_on_broken(|| {});
+        ucp_client.set_on_broken(|_| {});
         ucp_client.run();
 
         info!("tunnel {} broken", tid);
@@ -403,7 +402,7 @@ fn tcp_tunnel_loop(tid: u32, key: &Vec<u8>,
                 if duration.num_milliseconds() > ALIVE_TIMEOUT_TIME_MS {
                     break
                 }
-                try!(stream.write_u8(cs::HEARTBEAT)
+                try!(stream.write(&pack_cs_heartbeat_msg())
                      .map_err(|_| TunnelError {}));
             },
 

@@ -234,7 +234,7 @@ pub struct UcpStream {
     rto: u32,
 
     on_update: Rc<RefCell<Option<Box<FnMut(&mut UcpStream) -> bool>>>>,
-    on_broken: Option<Box<FnMut()>>
+    on_broken: Rc<RefCell<Option<Box<FnMut(&mut UcpStream)>>>>
 }
 
 impl UcpStream {
@@ -259,8 +259,12 @@ impl UcpStream {
             seq: 0, una: 0,
 
             on_update: Rc::new(RefCell::new(None)),
-            on_broken: None
+            on_broken: Rc::new(RefCell::new(None))
         }
+    }
+
+    pub fn get_remote_addr(&self) -> SocketAddr {
+        self.remote_addr
     }
 
     pub fn set_on_update<CB>(&mut self, cb: CB)
@@ -269,8 +273,8 @@ impl UcpStream {
     }
 
     pub fn set_on_broken<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut() {
-        self.on_broken = Some(Box::new(cb));
+        where CB: 'static + FnMut(&mut UcpStream) {
+        self.on_broken = Rc::new(RefCell::new(Some(Box::new(cb))));
     }
 
     pub fn send(&mut self, buf: &[u8]) {
@@ -337,7 +341,8 @@ impl UcpStream {
         let alive = interval < UCP_STREAM_BROKEN_MILLIS;
 
         if !alive {
-            (self.on_broken.as_mut().unwrap())();
+            let on_broken = self.on_broken.clone();
+            (on_broken.borrow_mut().as_mut().unwrap())(self);
         }
 
         alive
@@ -696,7 +701,7 @@ impl UcpClient {
     }
 
     pub fn set_on_broken<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut() {
+        where CB: 'static + FnMut(&mut UcpStream) {
         self.ucp.set_on_broken(cb);
     }
 
