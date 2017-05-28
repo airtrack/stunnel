@@ -11,17 +11,12 @@ use std::net::TcpListener;
 use std::net::TcpStream;
 use std::net::ToSocketAddrs;
 use std::str::from_utf8;
+
 use stunnel::logger;
 use stunnel::cryptor::Cryptor;
-use stunnel::tcp::{Tcp, TcpError};
-use stunnel::client::{
-    Tunnel, TcpTunnel, TunnelPortMsg,
-    TunnelWritePort, TunnelReadPort
-};
-use stunnel::socks5::{
-    ConnectDest, get_connect_dest,
-    reply_connect_success, reply_failure
-};
+use stunnel::tcp::*;
+use stunnel::client::*;
+use stunnel::socks5::*;
 
 fn tunnel_port_write(s: TcpStream, read_port: TunnelReadPort,
                      write_port: TunnelWritePort) {
@@ -109,11 +104,16 @@ fn tunnel_port_read(s: TcpStream, read_port: TunnelReadPort) {
 }
 
 fn run_tunnels(listen_addr: String, server_addr: String,
-               count: u32, key: Vec<u8>) {
+               count: u32, key: Vec<u8>, enable_ucp: bool) {
     let mut tunnels = Vec::new();
-    for i in 0..count {
-        let tunnel = TcpTunnel::new(i, server_addr.clone(), key.clone());
+    if enable_ucp {
+        let tunnel = UcpTunnel::new(0, server_addr.clone(), key.clone());
         tunnels.push(tunnel);
+    } else {
+        for i in 0..count {
+            let tunnel = TcpTunnel::new(i, server_addr.clone(), key.clone());
+            tunnels.push(tunnel);
+        }
     }
 
     let mut index = 0;
@@ -150,6 +150,7 @@ fn main() {
     opts.reqopt("c", "tunnel-count", "tunnel count", "tunnel-count");
     opts.optopt("l", "listen", "listen address", "listen-address");
     opts.optopt("", "log", "log path", "log-path");
+    opts.optflag("", "enable-ucp", "enable ucp");
 
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => { m }
@@ -163,6 +164,7 @@ fn main() {
     let tunnel_count = matches.opt_str("c").unwrap();
     let key = matches.opt_str("k").unwrap().into_bytes();
     let log_path = matches.opt_str("log").unwrap_or(String::new());
+    let enable_ucp = matches.opt_present("enable-ucp");
     let listen_addr = matches.opt_str("l")
         .unwrap_or("127.0.0.1:1080".to_string());
     let (min, max) = Cryptor::key_size_range();
@@ -181,5 +183,5 @@ fn main() {
     };
 
     logger::init(log::LogLevel::Info, log_path).unwrap();
-    run_tunnels(listen_addr, server_addr, count, key);
+    run_tunnels(listen_addr, server_addr, count, key, enable_ucp);
 }
