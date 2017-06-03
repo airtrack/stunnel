@@ -22,12 +22,14 @@ const DEFAULT_WINDOW: u32 = 256;
 const DEFAULT_RTO: u32 = 100;
 const HEARTBEAT_INTERVAL_MILLIS: i64 = 5000;
 const UCP_STREAM_BROKEN_MILLIS: i64 = 60000;
+const SKIP_RESEND_TIMES: u32 = 1;
 
 struct UcpPacket {
     buf: [u8; 1400],
     size: usize,
     payload: u16,
     read_pos: usize,
+    skip_times: u32,
 
     session_id: u32,
     timestamp: u32,
@@ -45,6 +47,7 @@ impl UcpPacket {
             size: 0,
             payload: 0,
             read_pos: 0,
+            skip_times: 0,
             session_id: 0,
             timestamp: 0,
             window: 0,
@@ -387,8 +390,10 @@ impl UcpStream {
 
         for packet in self.send_queue.iter_mut() {
             let interval = now - packet.timestamp;
+            let skip_resend = packet.skip_times >= SKIP_RESEND_TIMES;
 
-            if interval >= self.rto {
+            if interval >= self.rto || skip_resend {
+                packet.skip_times = 0;
                 packet.window = self.local_window;
                 packet.una = self.una;
                 packet.timestamp = now;
@@ -406,6 +411,15 @@ impl UcpStream {
         let window = self.remote_window as usize;
 
         while self.send_queue.len() < window {
+            if let Some(q) = self.send_queue.front() {
+                if let Some(p) = self.send_buffer.front() {
+                    let seq_diff = (p.seq - q.seq) as usize;
+                    if seq_diff >= window {
+                        break
+                    }
+                }
+            }
+
             if let Some(mut packet) = self.send_buffer.pop_front() {
                 packet.window = self.local_window;
                 packet.una = self.una;
@@ -602,10 +616,14 @@ impl UcpStream {
         let rtt = self.timestamp() - timestamp;
         self.rto = (self.rto + rtt) / 2;
 
-        for i in 0 .. self.send_queue.len() {
+        for i in 0..self.send_queue.len() {
             if self.send_queue[i].seq == seq {
                 self.send_queue.remove(i);
                 return true
+            } else {
+                if self.send_queue[i].timestamp <= timestamp {
+                    self.send_queue[i].skip_times += 1;
+                }
             }
         }
 
