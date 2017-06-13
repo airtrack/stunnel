@@ -231,7 +231,7 @@ struct UcpTask {
 
 impl UcpTask {
     fn new(key: Vec<u8>) -> UcpTask {
-        let (core_tx, core_rx) = sync_channel(10000);
+        let (core_tx, core_rx) = sync_channel(200);
 
         UcpTask {
             key: key,
@@ -394,8 +394,11 @@ impl UcpTask {
     }
 
     fn process_pending_tunnel_messages(&mut self, ucp: &mut UcpStream) {
-        while let Ok(msg) = self.core_rx.try_recv() {
-            self.process_tunnel_msg(ucp, msg);
+        while !ucp.is_send_buffer_overflow() {
+            match self.core_rx.try_recv() {
+                Ok(msg) => self.process_tunnel_msg(ucp, msg),
+                Err(_) => break
+            }
         }
     }
 

@@ -268,8 +268,8 @@ impl UcpStream {
         }
     }
 
-    pub fn get_remote_addr(&self) -> SocketAddr {
-        self.remote_addr
+    pub fn is_send_buffer_overflow(&self) -> bool {
+        self.send_buffer.len() >= 2 * self.remote_window as usize
     }
 
     pub fn set_on_update<CB>(&mut self, cb: CB)

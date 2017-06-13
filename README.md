@@ -29,8 +29,8 @@ Build by [Cargo](https://crates.io/):
 Usage
 -----
 
-	./server -l listen-address -k key [--enable-ucp]
-	./client -s server-address -k key -c tunnel-count [-l listen-address] [--log log-path] [--enable-ucp]
+	./stunnel_server -l listen-address -k key [--enable-ucp]
+	./stunnel_client -s server-address -k key -c tunnel-count [-l listen-address] [--log log-path] [--enable-ucp]
 
 Browser connect client listen address(`127.0.0.1:1080`) through SOCKS5.
 
