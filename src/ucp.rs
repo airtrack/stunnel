@@ -269,7 +269,7 @@ impl UcpStream {
     }
 
     pub fn is_send_buffer_overflow(&self) -> bool {
-        self.send_buffer.len() >= 2 * self.remote_window as usize
+        self.send_buffer.len() >= self.remote_window as usize
     }
 
     pub fn set_on_update<CB>(&mut self, cb: CB)
@@ -552,12 +552,6 @@ impl UcpStream {
     }
 
     fn process_data(&mut self, packet: Box<UcpPacket>) {
-        let max_seq = self.una + self.local_window;
-        let max_seq_diff = (packet.seq - max_seq) as i32;
-        if max_seq_diff > 0 {
-            return
-        }
-
         self.ack_list.push((packet.seq, packet.timestamp));
 
         let una_diff = (packet.seq - self.una) as i32;
