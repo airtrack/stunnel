@@ -182,6 +182,6 @@ fn main() {
         Ok(count) => count
     };
 
-    logger::init(log::LogLevel::Info, log_path).unwrap();
+    logger::init(log::Level::Info, log_path).unwrap();
     run_tunnels(listen_addr, server_addr, count, key, enable_ucp);
 }
