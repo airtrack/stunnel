@@ -5,19 +5,19 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::thread;
 use log;
-use log::{LogRecord, LogLevel, LogMetadata, SetLoggerError};
+use log::{Record, Level, Metadata, SetLoggerError, LevelFilter};
 
 struct ChannelLogger {
-    level: LogLevel,
+    level: Level,
     msg_queue: Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>
 }
 
 impl log::Log for ChannelLogger {
-    fn enabled(&self, metadata: &LogMetadata) -> bool {
+    fn enabled(&self, metadata: &Metadata) -> bool {
         metadata.level() <= self.level
     }
 
-    fn log(&self, record: &LogRecord) {
+    fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
             let mut data = Vec::new();
             let _ = write!(&mut data, "{} - {}\n",
@@ -28,6 +28,9 @@ impl log::Log for ChannelLogger {
             queue.push_back(data);
             cvar.notify_one();
         }
+    }
+
+    fn flush(&self) {
     }
 }
 
@@ -52,7 +55,7 @@ fn log_thread_func(msg_queue: Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>,
     }
 }
 
-pub fn init(level: LogLevel, log_path: String) -> Result<(), SetLoggerError> {
+pub fn init(level: Level, log_path: String) -> Result<(), SetLoggerError> {
     let sender = Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
     let receiver = sender.clone();
 
@@ -60,8 +63,6 @@ pub fn init(level: LogLevel, log_path: String) -> Result<(), SetLoggerError> {
         log_thread_func(receiver, log_path);
     });
 
-    log::set_logger(|max_log_level| {
-        max_log_level.set(log::LogLevelFilter::Info);
-        Box::new(ChannelLogger { level: level, msg_queue: sender })
-    })
+    log::set_max_level(LevelFilter::Info);
+    log::set_boxed_logger(Box::new(ChannelLogger { level: level, msg_queue: sender }))
 }
