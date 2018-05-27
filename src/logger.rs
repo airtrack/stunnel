@@ -1,7 +1,7 @@
 use std::vec::Vec;
 use std::collections::vec_deque::VecDeque;
 use std::sync::{Arc, Mutex, Condvar};
-use std::fs::OpenOptions;
+use std::fs::{OpenOptions, remove_file, rename};
 use std::io::Write;
 use std::thread;
 use log;
@@ -40,7 +40,11 @@ impl log::Log for ChannelLogger {
 }
 
 fn log_thread_func(msg_queue: Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>,
-                   log_path: String) {
+                   log_path: String, rotate_count: usize, rotate_size: usize) {
+    let mut size = 0;
+    let mut file = OpenOptions::new().create(true).
+        write(true).append(true).open(&log_path);
+
     loop {
         let &(ref lock, ref cvar) = &*msg_queue;
         let mut queue = lock.lock().unwrap();
@@ -49,23 +53,54 @@ fn log_thread_func(msg_queue: Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>,
         }
 
         let data = queue.pop_front().unwrap();
-        if !log_path.is_empty() {
-            let file = OpenOptions::new().create(true).
+        match file {
+            Ok(ref mut f) => {
+                let _ = f.write_all(&data);
+                size += data.len();
+            },
+            Err(_) => { }
+        }
+
+        if size > rotate_size && rotate_count > 0 {
+            rotate_file(&log_path, rotate_count);
+            file = OpenOptions::new().create(true).
                 write(true).append(true).open(&log_path);
-            match file {
-                Ok(mut f) => { let _ = f.write_all(&data); },
-                Err(_) => { }
-            }
+            size = 0;
         }
     }
 }
 
-pub fn init(level: Level, log_path: String) -> Result<(), SetLoggerError> {
+fn get_rotate_name(log_path: &String, num: usize) -> String {
+    let mut path = log_path.clone();
+
+    if num > 0 {
+        path.push('.');
+        path.push_str(&num.to_string());
+    }
+
+    path
+}
+
+fn rotate_file(log_path: &String, rotate_count: usize) {
+    let mut rotate_num = rotate_count - 1;
+    let _ = remove_file(get_rotate_name(log_path, rotate_num));
+
+    while rotate_num > 0 {
+        let to = get_rotate_name(log_path, rotate_num);
+        let from = get_rotate_name(log_path, rotate_num - 1);
+        let _ = rename(from, to);
+        rotate_num -= 1;
+    }
+}
+
+pub fn init(level: Level, log_path: String,
+            rotate_count: usize,
+            rotate_size: usize) -> Result<(), SetLoggerError> {
     let sender = Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
     let receiver = sender.clone();
 
     thread::spawn(move || {
-        log_thread_func(receiver, log_path);
+        log_thread_func(receiver, log_path, rotate_count, rotate_size);
     });
 
     log::set_max_level(LevelFilter::Info);
