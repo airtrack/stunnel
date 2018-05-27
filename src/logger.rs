@@ -6,6 +6,7 @@ use std::io::Write;
 use std::thread;
 use log;
 use log::{Record, Level, Metadata, SetLoggerError, LevelFilter};
+use time::{at, get_time, strftime};
 
 struct ChannelLogger {
     level: Level,
@@ -20,8 +21,12 @@ impl log::Log for ChannelLogger {
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
             let mut data = Vec::new();
-            let _ = write!(&mut data, "{} - {}\n",
-                           record.level(), record.args());
+            let now = at(get_time());
+            let date = strftime("%F %T", &now).unwrap();
+            let microseconds = now.tm_nsec / 1000;
+
+            let _ = write!(&mut data, "[{}.{:06}][{}] - {}\n",
+                           date, microseconds, record.level(), record.args());
 
             let &(ref lock, ref cvar) = &*self.msg_queue;
             let mut queue = lock.lock().unwrap();
