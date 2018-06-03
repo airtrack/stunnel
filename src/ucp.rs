@@ -20,8 +20,8 @@ const CMD_HEARTBEAT_ACK: u8 = 133;
 const UCP_PACKET_META_SIZE: usize = 29;
 const DEFAULT_WINDOW: u32 = 256;
 const DEFAULT_RTO: u32 = 100;
-const HEARTBEAT_INTERVAL_MILLIS: i64 = 5000;
-const UCP_STREAM_BROKEN_MILLIS: i64 = 60000;
+const HEARTBEAT_INTERVAL_MILLIS: i64 = 2500;
+const UCP_STREAM_BROKEN_MILLIS: i64 = 20000;
 const SKIP_RESEND_TIMES: u32 = 1;
 
 struct UcpPacket {
@@ -484,6 +484,7 @@ impl UcpStream {
             return
         }
 
+        self.alive_time = get_time();
         self.remote_window = packet.window;
 
         match self.state {
