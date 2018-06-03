@@ -348,6 +348,8 @@ impl UcpStream {
         if !alive {
             let on_broken = self.on_broken.clone();
             (on_broken.borrow_mut().as_mut().unwrap())(self);
+            error!("ucp alive timeout, remote address: {}, session: {}",
+                   self.remote_addr, self.session_id);
         }
 
         alive
@@ -436,6 +438,8 @@ impl UcpStream {
     fn process_packet(&mut self, packet: Box<UcpPacket>,
                       remote_addr: SocketAddr) {
         if self.remote_addr != remote_addr {
+            error!("unexpect packet from {}, expect from {}",
+                   remote_addr, self.remote_addr);
             return
         }
 
@@ -455,6 +459,8 @@ impl UcpStream {
 
         let syn = self.new_packet(CMD_SYN);
         self.send_packet(syn);
+        info!("connecting ucp server {}, session: {}",
+              self.remote_addr, self.session_id);
     }
 
     fn accepting(&mut self, packet: Box<UcpPacket>) {
@@ -467,10 +473,14 @@ impl UcpStream {
         syn_ack.payload_write_u32(packet.seq);
         syn_ack.payload_write_u32(packet.timestamp);
         self.send_packet(syn_ack);
+        info!("accepting ucp client {}, session: {}",
+              self.remote_addr, self.session_id);
     }
 
     fn processing(&mut self, packet: Box<UcpPacket>) {
         if self.session_id != packet.session_id {
+            error!("unexpect session_id: {}, expect {}",
+                   packet.session_id, self.session_id);
             return
         }
 
@@ -497,6 +507,8 @@ impl UcpStream {
 
             if self.process_an_ack(seq, timestamp) {
                 self.state = UcpState::ESTABLISHED;
+                info!("{} established, session: {}",
+                      self.remote_addr, self.session_id);
             }
         }
     }
@@ -590,6 +602,8 @@ impl UcpStream {
                     if self.process_an_ack(seq, timestamp) {
                         self.state = UcpState::ESTABLISHED;
                         self.una = packet.seq;
+                        info!("{} established, session: {}",
+                              self.remote_addr, self.session_id);
                     }
                 },
                 _ => {}
@@ -749,6 +763,7 @@ impl UcpClient {
     fn process_packet(&mut self, mut packet: Box<UcpPacket>,
                       remote_addr: SocketAddr) {
         if !packet.parse() {
+            error!("recv illgal packet from {}", remote_addr);
             return
         }
 
@@ -824,6 +839,7 @@ impl UcpServer {
     fn process_packet(&mut self, mut packet: Box<UcpPacket>,
                       remote_addr: SocketAddr) {
         if !packet.parse() {
+            error!("recv illgal packet from {}", remote_addr);
             return
         }
 
@@ -833,7 +849,10 @@ impl UcpServer {
         }
 
         if packet.is_syn() {
+            info!("new ucp client from {}", remote_addr);
             self.new_ucp_stream(packet, remote_addr);
+        } else {
+            error!("no session ucp packet from {}", remote_addr);
         }
     }
 

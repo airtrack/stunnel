@@ -119,8 +119,6 @@ fn run_tunnels(listen_addr: String, server_addr: String,
     let mut index = 0;
     let listener = TcpListener::bind(listen_addr.as_str()).unwrap();
 
-    info!("starting up");
-
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
@@ -183,5 +181,7 @@ fn main() {
     };
 
     logger::init(log::Level::Info, log_path, 1, 2000000).unwrap();
+    info!("starting up");
+
     run_tunnels(listen_addr, server_addr, count, key, enable_ucp);
 }
