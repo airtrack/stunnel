@@ -20,7 +20,7 @@ Simple SOCKS5 tunnel. Client only provide NO AUTHENTICATION TCP method.
 Build
 -----
 
-Requires nightly build compiler, because it depends on several unstable functions, e.g. `lookup_host`.
+Requires nightly build compiler, because it depends on `select!`.
 
 Build by [Cargo](https://crates.io/):
 

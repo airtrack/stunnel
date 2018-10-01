@@ -1,4 +1,3 @@
-#![feature(lookup_host)]
 #![feature(mpsc_select)]
 
 #[macro_use]

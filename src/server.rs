@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::str::from_utf8;
 use std::rc::Rc;
 use std::vec::Vec;
-use std::io::{Error, Write};
-use std::net::{lookup_host, TcpStream};
+use std::io::Write;
+use std::net::TcpStream;
 use std::sync::mpsc::{
     sync_channel, channel,
     SyncSender, Sender, Receiver
@@ -181,12 +181,7 @@ fn tunnel_port_task(read_port: TunnelReadPort, write_port: TunnelWritePort) {
         },
 
         TunnelPortMsg::ConnectDN(domain_name, port) => {
-            lookup_host(from_utf8(&domain_name[..]).unwrap())
-                .and_then(|hosts| {
-                    hosts.filter_map(|host| {
-                        TcpStream::connect((host.ip().clone(), port)).ok()
-                    }).next().ok_or(Error::last_os_error())
-                }).ok()
+            TcpStream::connect((from_utf8(&domain_name[..]).unwrap(), port)).ok()
         },
 
         _ => None
