@@ -303,10 +303,9 @@ impl UcpStream {
         let mut size = 0;
 
         while size < buf.len() && !self.recv_queue.is_empty() {
-            let seq = self.una + 1;
-
             if let Some(packet) = self.recv_queue.front_mut() {
-                if seq != packet.seq {
+                let diff = (packet.seq - self.una) as i32;
+                if diff >= 0 {
                     break
                 }
 
@@ -318,7 +317,6 @@ impl UcpStream {
 
             if no_remain_payload {
                 self.recv_queue.pop_front();
-                self.una = seq;
             }
         }
 
@@ -467,7 +465,7 @@ impl UcpStream {
         self.state = UcpState::ACCEPTING;
         self.session_id = packet.session_id;
         self.remote_window = packet.window;
-        self.una = packet.seq;
+        self.una = packet.seq + 1;
 
         let mut syn_ack = self.new_packet(CMD_SYN_ACK);
         syn_ack.payload_write_u32(packet.seq);
@@ -546,7 +544,7 @@ impl UcpStream {
             let diff = self.send_queue.front().map(
                 |packet| (packet.seq - una) as i32).unwrap();
 
-            if diff <= 0 {
+            if diff < 0 {
                 self.send_queue.pop_front();
             } else {
                 break
@@ -568,7 +566,7 @@ impl UcpStream {
         self.ack_list.push((packet.seq, packet.timestamp));
 
         let una_diff = (packet.seq - self.una) as i32;
-        if una_diff <= 0 {
+        if una_diff < 0 {
             return
         }
 
@@ -586,6 +584,14 @@ impl UcpStream {
         }
 
         self.recv_queue.insert(pos, packet);
+
+        for i in pos..self.recv_queue.len() {
+            if self.recv_queue[i].seq == self.una {
+                self.una += 1;
+            } else {
+                break
+            }
+        }
     }
 
     fn process_syn_ack(&mut self, mut packet: Box<UcpPacket>) {
@@ -602,7 +608,7 @@ impl UcpStream {
                 UcpState::CONNECTING => {
                     if self.process_an_ack(seq, timestamp) {
                         self.state = UcpState::ESTABLISHED;
-                        self.una = packet.seq;
+                        self.una = packet.seq + 1;
                         info!("{} established, session: {}",
                               self.remote_addr, self.session_id);
                     }
