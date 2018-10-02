@@ -689,15 +689,8 @@ impl UcpStream {
         }
     }
 
-    fn send_packet(&mut self, mut packet: Box<UcpPacket>) {
-        if !self.send_buffer.is_empty() {
-            self.send_buffer.push_back(packet);
-        } else if self.send_queue.len() < self.remote_window as usize {
-            self.send_packet_directly(&mut packet);
-            self.send_queue.push_back(packet);
-        } else {
-            self.send_buffer.push_back(packet);
-        }
+    fn send_packet(&mut self, packet: Box<UcpPacket>) {
+        self.send_buffer.push_back(packet);
     }
 
     fn send_packet_directly(&self, packet: &mut Box<UcpPacket>) {
