@@ -18,11 +18,11 @@ const CMD_DATA: u8 = 131;
 const CMD_HEARTBEAT: u8 = 132;
 const CMD_HEARTBEAT_ACK: u8 = 133;
 const UCP_PACKET_META_SIZE: usize = 29;
-const DEFAULT_WINDOW: u32 = 256;
+const DEFAULT_WINDOW: u32 = 512;
 const DEFAULT_RTO: u32 = 100;
 const HEARTBEAT_INTERVAL_MILLIS: i64 = 2500;
 const UCP_STREAM_BROKEN_MILLIS: i64 = 20000;
-const SKIP_RESEND_TIMES: u32 = 1;
+const SKIP_RESEND_TIMES: u32 = 2;
 
 struct UcpPacket {
     buf: [u8; 1400],
