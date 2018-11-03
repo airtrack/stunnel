@@ -1,11 +1,10 @@
-#![feature(mpsc_select)]
-
 #[macro_use]
 extern crate log;
 extern crate crc;
 extern crate crypto;
 extern crate time;
 extern crate rand;
+extern crate crossbeam_channel;
 
 pub mod logger;
 pub mod tcp;

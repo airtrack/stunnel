@@ -12,3 +12,4 @@ rand = "*"
 log = { version = "*", features = ["std"] }
 getopts = "0.2"
 crc = "1.4.0"
+crossbeam-channel = "0.2"
