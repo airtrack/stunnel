@@ -238,8 +238,8 @@ pub struct UcpStream {
     una: u32,
     rto: u32,
 
-    on_update: Rc<RefCell<Option<Box<FnMut(&mut UcpStream) -> bool>>>>,
-    on_broken: Rc<RefCell<Option<Box<FnMut(&mut UcpStream)>>>>
+    on_update: Rc<RefCell<Option<Box<dyn FnMut(&mut UcpStream) -> bool>>>>,
+    on_broken: Rc<RefCell<Option<Box<dyn FnMut(&mut UcpStream)>>>>
 }
 
 impl UcpStream {
@@ -777,7 +777,7 @@ pub struct UcpServer {
     socket: UdpSocket,
     ucp_map: UcpStreamMap,
     broken_ucp: Vec<SocketAddr>,
-    on_new_ucp: Option<Box<FnMut(&mut UcpStream)>>,
+    on_new_ucp: Option<Box<dyn FnMut(&mut UcpStream)>>,
     update_time: Timespec
 }
 

@@ -390,10 +390,10 @@ fn tcp_tunnel_loop(tid: u32, key: &Vec<u8>,
     let mut alive_time = get_time();
     let timer = Timer::new(HEARTBEAT_INTERVAL_MS as u32);
 
-    try!(stream.write(encryptor.ctr_as_slice())
-         .map_err(|_| TunnelError {}));
-    try!(stream.write(&encryptor.encrypt(&VERIFY_DATA)[..])
-         .map_err(|_| TunnelError {}));
+    stream.write(encryptor.ctr_as_slice())
+        .map_err(|_| TunnelError {})?;
+    stream.write(&encryptor.encrypt(&VERIFY_DATA)[..])
+        .map_err(|_| TunnelError {})?;
 
     loop {
         select! {
@@ -402,16 +402,16 @@ fn tcp_tunnel_loop(tid: u32, key: &Vec<u8>,
                 if duration.num_milliseconds() > ALIVE_TIMEOUT_TIME_MS {
                     break
                 }
-                try!(stream.write(&pack_cs_heartbeat_msg())
-                     .map_err(|_| TunnelError {}));
+                stream.write(&pack_cs_heartbeat_msg())
+                    .map_err(|_| TunnelError {})?;
             },
 
             recv(core_rx, msg) => match msg {
                 Some(msg) => {
-                    try!(process_tunnel_msg(
+                    process_tunnel_msg(
                         tid, msg, &mut alive_time,
                         port_map, &mut encryptor,
-                        |buf| stream.write(buf).map_err(|_| TunnelError {})));
+                        |buf| stream.write(buf).map_err(|_| TunnelError {}))?;
                 },
                 None => break
             }
@@ -430,17 +430,17 @@ fn tcp_tunnel_recv_task(key: Vec<u8>, receiver: TcpStream,
 
 fn tcp_tunnel_recv_loop(key: &Vec<u8>, core_tx: &Sender<TunnelMsg>,
                         stream: &mut Tcp) -> Result<(), TcpError> {
-    let ctr = try!(stream.read_exact(CTR_SIZE));
+    let ctr = stream.read_exact(CTR_SIZE)?;
     let mut decryptor = Cryptor::with_ctr(&key[..], ctr);
 
     loop {
-        let op = try!(stream.read_u8());
+        let op = stream.read_u8()?;
         if op == sc::HEARTBEAT_RSP {
             core_tx.send(TunnelMsg::SCHeartbeat);
             continue
         }
 
-        let id = try!(stream.read_u32());
+        let id = stream.read_u32()?;
         match op {
             sc::CLOSE_PORT => {
                 core_tx.send(TunnelMsg::SCClosePort(id));
@@ -451,15 +451,15 @@ fn tcp_tunnel_recv_loop(key: &Vec<u8>, core_tx: &Sender<TunnelMsg>,
             },
 
             sc::CONNECT_OK => {
-                let len = try!(stream.read_u32());
-                let buf = try!(stream.read_exact(len as usize));
+                let len = stream.read_u32()?;
+                let buf = stream.read_exact(len as usize)?;
                 let data = decryptor.decrypt(&buf[..]);
                 core_tx.send(TunnelMsg::SCConnectOk(id, data));
             },
 
             sc::DATA => {
-                let len = try!(stream.read_u32());
-                let buf = try!(stream.read_exact(len as usize));
+                let len = stream.read_u32()?;
+                let buf = stream.read_exact(len as usize)?;
                 let data = decryptor.decrypt(&buf[..]);
                 core_tx.send(TunnelMsg::SCData(id, data));
             },
@@ -483,12 +483,12 @@ fn process_tunnel_msg<F>(tid: u32, msg: TunnelMsg,
             port_map.insert(id, PortMapValue {
                 count: 2, tx: tx, host: String::new(), port: 0 });
 
-            try!(send(&pack_cs_open_port_msg(id)));
+            send(&pack_cs_open_port_msg(id))?;
         },
 
         TunnelMsg::CSConnect(id, buf) => {
             let data = encryptor.encrypt(&buf[..]);
-            try!(send(&pack_cs_connect_msg(id, &data[..])[..]));
+            send(&pack_cs_connect_msg(id, &data[..])[..])?;
         },
 
         TunnelMsg::CSConnectDN(id, buf, port) => {
@@ -506,7 +506,7 @@ fn process_tunnel_msg<F>(tid: u32, msg: TunnelMsg,
 
             let packed_buffer =
                 pack_cs_connect_domain_msg(id, &data[..], port);
-            try!(send(&packed_buffer[..]));
+            send(&packed_buffer[..])?;
         },
 
         TunnelMsg::CSShutdownWrite(id) => {
@@ -521,13 +521,13 @@ fn process_tunnel_msg<F>(tid: u32, msg: TunnelMsg,
                 }
             }
 
-            try!(send(&pack_cs_shutdown_write_msg(id)));
+            send(&pack_cs_shutdown_write_msg(id))?;
         },
 
         TunnelMsg::CSData(id, buf) => {
             let data = encryptor.encrypt(&buf[..]);
 
-            try!(send(&pack_cs_data_msg(id, &data[..])[..]));
+            send(&pack_cs_data_msg(id, &data[..])[..])?;
         },
 
         TunnelMsg::CSClosePort(id) => {
@@ -545,7 +545,7 @@ fn process_tunnel_msg<F>(tid: u32, msg: TunnelMsg,
             let res = port_map.get(&id).map(|value| {
                 value.tx.send(TunnelPortMsg::ClosePort);
 
-                try!(send(&pack_cs_close_port_msg(id)));
+                send(&pack_cs_close_port_msg(id))?;
                 Ok(())
             });
 

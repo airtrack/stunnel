@@ -27,7 +27,7 @@ fn select_method(stream: &mut Tcp) -> Result<u8, TcpError> {
         Err(error) => return Err(error)
     }
 
-    let method_num = try!(stream.read_u8());
+    let method_num = stream.read_u8()?;
     if method_num == 1 {
         match stream.read_u8() {
             Ok(METHOD_NO_AUTH) => {},
@@ -35,7 +35,7 @@ fn select_method(stream: &mut Tcp) -> Result<u8, TcpError> {
             Err(error) => return Err(error)
         }
     } else {
-        let methods = try!(stream.read_exact(method_num as usize));
+        let methods = stream.read_exact(method_num as usize)?;
         if !methods.into_iter().any(|method| method == METHOD_NO_AUTH) {
             return Ok(METHOD_NO_ACCEPT)
         }
@@ -50,15 +50,15 @@ fn reply_method(stream: &mut Tcp, method: u8) -> Result<(), TcpError> {
 }
 
 pub fn get_connect_dest(stream: &mut Tcp) -> Result<ConnectDest, TcpError> {
-    let method = try!(select_method(stream));
-    try!(reply_method(stream, method));
+    let method = select_method(stream)?;
+    reply_method(stream, method)?;
 
     if method != METHOD_NO_AUTH {
         return Ok(ConnectDest::Unknown)
     }
 
     let mut buf = [0u8; 4];
-    try!(stream.read_exact_buf(&mut buf));
+    stream.read_exact_buf(&mut buf)?;
     if buf[1] != CMD_CONNECT {
         return Ok(ConnectDest::Unknown)
     }
@@ -66,8 +66,8 @@ pub fn get_connect_dest(stream: &mut Tcp) -> Result<ConnectDest, TcpError> {
     let dest = match buf[3] {
         ATYP_IPV4 => {
             let mut ipv4 = [0u8; 4];
-            try!(stream.read_exact_buf(&mut ipv4));
-            let port = try!(stream.read_u16());
+            stream.read_exact_buf(&mut ipv4)?;
+            let port = stream.read_u16()?;
 
             ConnectDest::Addr(
                 SocketAddr::V4(
@@ -81,9 +81,9 @@ pub fn get_connect_dest(stream: &mut Tcp) -> Result<ConnectDest, TcpError> {
         },
 
         ATYP_DOMAINNAME => {
-            let len = try!(stream.read_u8());
-            let domain_name = try!(stream.read_exact(len as usize));
-            let port = try!(stream.read_u16());
+            let len = stream.read_u8()?;
+            let domain_name = stream.read_exact(len as usize)?;
+            let port = stream.read_u16()?;
             ConnectDest::DomainName(domain_name, port)
         },
 
@@ -106,26 +106,26 @@ pub fn reply_failure(stream: &mut Tcp) -> Result<(), TcpError> {
 fn reply_result(stream: &mut Tcp,
                 addr: SocketAddr, rep: u8) -> Result<(), TcpError> {
     let buf = [VER, rep, RSV];
-    try!(stream.write(&buf));
+    stream.write(&buf)?;
 
     match addr {
         SocketAddr::V4(ipv4) => {
             let bytes = ipv4.ip().octets();
             let buf = [ATYP_IPV4, bytes[3], bytes[2], bytes[1], bytes[0]];
-            try!(stream.write(&buf));
-            try!(stream.write_u16(ipv4.port()));
+            stream.write(&buf)?;
+            stream.write_u16(ipv4.port())?;
         },
         SocketAddr::V6(ipv6) => {
             let segments = ipv6.ip().segments();
-            try!(stream.write_u8(ATYP_IPV6));
+            stream.write_u8(ATYP_IPV6)?;
 
             let mut n = segments.len();
             while n >= 1 {
                 n -= 1;
-                try!(stream.write_u16(segments[n]));
+                stream.write_u16(segments[n])?;
             }
 
-            try!(stream.write_u16(ipv6.port()));
+            stream.write_u16(ipv6.port())?;
         }
     }
 

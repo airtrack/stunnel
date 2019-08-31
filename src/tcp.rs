@@ -34,14 +34,14 @@ impl Tcp {
 
     pub fn read_u8(&mut self) -> Result<u8, TcpError> {
         let mut buf = [0u8];
-        try!(self.read_exact_buf(&mut buf));
+        self.read_exact_buf(&mut buf)?;
 
         Ok(buf[0])
     }
 
     pub fn read_u16(&mut self) -> Result<u16, TcpError> {
         let mut buf = [0u8; 2];
-        try!(self.read_exact_buf(&mut buf));
+        self.read_exact_buf(&mut buf)?;
 
         let result = unsafe { *(buf.as_ptr() as *const u16) };
         Ok(u16::from_be(result))
@@ -49,7 +49,7 @@ impl Tcp {
 
     pub fn read_u32(&mut self) -> Result<u32, TcpError> {
         let mut buf = [0u8; 4];
-        try!(self.read_exact_buf(&mut buf));
+        self.read_exact_buf(&mut buf)?;
 
         let result = unsafe { *(buf.as_ptr() as *const u32) };
         Ok(u32::from_be(result))
@@ -57,7 +57,7 @@ impl Tcp {
 
     pub fn read_u64(&mut self) -> Result<u64, TcpError> {
         let mut buf = [0u8; 8];
-        try!(self.read_exact_buf(&mut buf));
+        self.read_exact_buf(&mut buf)?;
 
         let result = unsafe { *(buf.as_ptr() as *const u64) };
         Ok(u64::from_be(result))
@@ -67,7 +67,7 @@ impl Tcp {
         let mut buf = Vec::with_capacity(size);
         unsafe { buf.set_len(size); }
 
-        try!(self.read_exact_buf(&mut buf[..]));
+        self.read_exact_buf(&mut buf[..])?;
         Ok(buf)
     }
 
