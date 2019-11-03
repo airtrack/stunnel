@@ -2,67 +2,97 @@
 extern crate log;
 extern crate getopts;
 extern crate stunnel;
+extern crate async_std;
 
 use std::env;
-use std::thread;
-use std::io::Write;
 use std::vec::Vec;
-use std::net::TcpListener;
-use std::net::TcpStream;
+use std::net::Shutdown;
 use std::net::ToSocketAddrs;
 use std::str::from_utf8;
 
+use async_std::prelude::*;
+use async_std::net::TcpListener;
+use async_std::net::TcpStream;
+use async_std::future::join;
+use async_std::task;
+
 use stunnel::logger;
+use stunnel::socks5;
 use stunnel::cryptor::Cryptor;
-use stunnel::tcp::*;
 use stunnel::client::*;
-use stunnel::socks5::*;
 
-fn tunnel_port_write(s: TcpStream, read_port: TunnelReadPort,
-                     write_port: TunnelWritePort) {
-    let mut stream = Tcp::new(s.try_clone().unwrap());
-
-    match get_connect_dest(&mut stream) {
-        Ok(ConnectDest::Addr(addr)) => {
-            let mut buf = Vec::new();
-            let _ = write!(&mut buf, "{}", addr);
-            write_port.connect(buf);
-        },
-
-        Ok(ConnectDest::DomainName(domain_name, port)) => {
-            write_port.connect_domain_name(domain_name, port);
-        },
-
-        _ => {
-            return write_port.close();
-        }
-    }
-
-    thread::spawn(move || {
-        let _ = tunnel_port_read(s, read_port);
-    });
-
+async fn process_read(stream: &mut &TcpStream, write_port: &TunnelWritePort) {
     loop {
-        match stream.read_at_most(1024) {
-            Ok(buf) => {
-                write_port.write(buf);
-            },
-            Err(TcpError::Eof) => {
-                stream.shutdown_read();
-                write_port.shutdown_write();
+        let mut buf = vec![0; 1024];
+        match stream.read(&mut buf).await {
+            Ok(0) => {
+                let _ = stream.shutdown(Shutdown::Read);
+                write_port.shutdown_write().await;
                 break
             },
+
+            Ok(n) => {
+                buf.truncate(n);
+                write_port.write(buf).await;
+            },
+
             Err(_) => {
-                stream.shutdown();
-                write_port.close();
+                let _ = stream.shutdown(Shutdown::Both);
+                write_port.close().await;
                 break
             }
         }
     }
 }
 
-fn tunnel_port_read(s: TcpStream, read_port: TunnelReadPort) {
-    let addr = match read_port.read() {
+async fn process_write(stream: &mut &TcpStream, read_port: &TunnelReadPort) {
+    loop {
+        let buf = match read_port.read().await {
+            TunnelPortMsg::Data(buf) => {
+                buf
+            },
+
+            TunnelPortMsg::ShutdownWrite => {
+                let _ = stream.shutdown(Shutdown::Write);
+                break
+            },
+
+            _ => {
+                let _ = stream.shutdown(Shutdown::Both);
+                break
+            }
+        };
+
+        if stream.write_all(&buf).await.is_err() {
+            let _ = stream.shutdown(Shutdown::Both);
+            break
+        }
+    }
+}
+
+async fn run_tunnel_port(mut stream: TcpStream,
+                         read_port: TunnelReadPort,
+                         write_port: TunnelWritePort) {
+    match socks5::handshake(&mut stream).await {
+        Ok(socks5::Destination::Address(addr)) => {
+            let mut buf = Vec::new();
+            let _ = std::io::Write::write_fmt(&mut buf, format_args!("{}", addr));
+            write_port.connect(buf).await;
+        },
+
+        Ok(socks5::Destination::DomainName(domain_name, port)) => {
+            write_port.connect_domain_name(domain_name, port).await;
+        },
+
+        _ => {
+            write_port.close().await;
+            read_port.drop().await;
+            write_port.drop().await;
+            return
+        }
+    }
+
+    let addr = match read_port.read().await {
         TunnelPortMsg::ConnectOk(buf) => {
             from_utf8(&buf[..]).unwrap().to_socket_addrs().unwrap().nth(0)
         },
@@ -70,37 +100,22 @@ fn tunnel_port_read(s: TcpStream, read_port: TunnelReadPort) {
         _ => None
     };
 
-    let mut stream = Tcp::new(s);
-    let ok = match addr {
-        Some(addr) => reply_connect_success(&mut stream, addr).is_ok(),
-        None => reply_failure(&mut stream).is_ok() && false
+    let success = match addr {
+        Some(addr) => socks5::destination_connected(&mut stream, addr).await.is_ok(),
+        None => socks5::destination_unreached(&mut stream).await.is_ok() && false
     };
 
-    if !ok {
-        stream.shutdown();
+    if success {
+        let (reader, writer) = &mut (&stream, &stream);
+        let r = process_read(reader, &write_port);
+        let w = process_write(writer, &read_port);
+        let _ = join!(r, w).await;
+    } else {
+        let _ = stream.shutdown(Shutdown::Both);
     }
 
-    while ok {
-        let buf = match read_port.read() {
-            TunnelPortMsg::Data(buf) => buf,
-            TunnelPortMsg::ShutdownWrite => {
-                stream.shutdown_write();
-                break
-            },
-            _ => {
-                stream.shutdown();
-                break
-            }
-        };
-
-        match stream.write(&buf[..]) {
-            Ok(_) => {},
-            Err(_) => {
-                stream.shutdown();
-                break
-            }
-        }
-    }
+    read_port.drop().await;
+    write_port.drop().await;
 }
 
 fn run_tunnels(listen_addr: String, server_addr: String,
@@ -116,26 +131,29 @@ fn run_tunnels(listen_addr: String, server_addr: String,
         }
     }
 
-    let mut index = 0;
-    let listener = TcpListener::bind(listen_addr.as_str()).unwrap();
+    task::block_on(async move {
+        let mut index = 0;
+        let listener = TcpListener::bind(listen_addr.as_str()).await.unwrap();
+        let mut incoming = listener.incoming();
 
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                {
-                    let tunnel: &mut Tunnel = tunnels.get_mut(index).unwrap();
-                    let (write_port, read_port) = tunnel.open_port();
-                    thread::spawn(move || {
-                        tunnel_port_write(stream, read_port, write_port);
-                    });
-                }
+        while let Some(stream) = incoming.next().await {
+            match stream {
+                Ok(stream) => {
+                    {
+                        let tunnel: &mut Tunnel = tunnels.get_mut(index).unwrap();
+                        let (write_port, read_port) = tunnel.open_port().await;
+                        task::spawn(async move {
+                            run_tunnel_port(stream, read_port, write_port).await;
+                        });
+                    }
 
-                index = (index + 1) % tunnels.len();
-            },
+                    index = (index + 1) % tunnels.len();
+                },
 
-            Err(_) => {}
+                Err(_) => {}
+            }
         }
-    }
+    });
 }
 
 fn main() {

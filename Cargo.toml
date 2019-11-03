@@ -1,11 +1,10 @@
 [package]
-
 name = "stunnel"
 version = "0.2.0"
 authors = ["airtrack <airtrack.sk@gmail.com>"]
+edition = "2018"
 
 [dependencies]
-
 rust-crypto = "*"
 time = "*"
 rand = "*"
@@ -13,3 +12,6 @@ log = { version = "*", features = ["std"] }
 getopts = "0.2"
 crc = "1.4.0"
 crossbeam-channel = "0.2"
+async-std = { version = "0.99", features = ["unstable"] }
+futures-core-preview = "=0.3.0-alpha.19"
+futures-timer = "1.0.2"
