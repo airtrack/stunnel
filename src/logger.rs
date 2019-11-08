@@ -25,8 +25,10 @@ impl log::Log for ChannelLogger {
             let date = strftime("%F %T", &now).unwrap();
             let microseconds = now.tm_nsec / 1000;
 
-            let _ = write!(&mut data, "[{}.{:06}][{}] - {}\n",
-                           date, microseconds, record.level(), record.args());
+            let _ = write!(&mut data, "[{}.{:06}][{}][{}:{}] - {}\n",
+                           date, microseconds, record.level(),
+                           record.file().unwrap(), record.line().unwrap(),
+                           record.args());
 
             let &(ref lock, ref cvar) = &*self.msg_queue;
             let mut queue = lock.lock().unwrap();

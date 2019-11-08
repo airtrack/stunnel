@@ -120,18 +120,18 @@ async fn run_tunnel_port(mut stream: TcpStream,
 
 fn run_tunnels(listen_addr: String, server_addr: String,
                count: u32, key: Vec<u8>, enable_ucp: bool) {
-    let mut tunnels = Vec::new();
-    if enable_ucp {
-        let tunnel = UcpTunnel::new(0, server_addr.clone(), key.clone());
-        tunnels.push(tunnel);
-    } else {
-        for i in 0..count {
-            let tunnel = TcpTunnel::new(i, server_addr.clone(), key.clone());
-            tunnels.push(tunnel);
-        }
-    }
-
     task::block_on(async move {
+        let mut tunnels = Vec::new();
+        if enable_ucp {
+            let tunnel = UcpTunnel::new(0, server_addr.clone(), key.clone());
+            tunnels.push(tunnel);
+        } else {
+            for i in 0..count {
+                let tunnel = TcpTunnel::new(i, server_addr.clone(), key.clone());
+                tunnels.push(tunnel);
+            }
+        }
+
         let mut index = 0;
         let listener = TcpListener::bind(listen_addr.as_str()).await.unwrap();
         let mut incoming = listener.incoming();

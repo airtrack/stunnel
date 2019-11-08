@@ -4,7 +4,7 @@ use std::future::Future;
 use std::time::{Duration, Instant};
 use std::thread;
 
-use futures_core::stream::Stream;
+use async_std::stream::Stream;
 use futures_timer::Delay;
 
 use crossbeam_channel::select;

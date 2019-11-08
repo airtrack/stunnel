@@ -355,18 +355,21 @@ async fn tcp_tunnel_core_task(tid: u32, server_addr: String, key: Vec<u8>,
 
         Err(_) => {
             task::sleep(Duration::from_millis(1000)).await;
-            /*task::spawn(async move {
-                tcp_tunnel_core_task(tid, server_addr, key, core_rx, core_tx).await;
-            });*/
             return
         }
     };
 
     let mut port_map = PortMap::new();
     let (reader, writer) = &mut (&stream, &stream);
-    let r = process_tcp_tunnel_read(key.clone(), reader, core_tx.clone());
-    let w = process_tcp_tunnel_write(tid, key.clone(), core_rx.clone(),
-                                     writer, &mut port_map);
+    let r = async {
+        let _ = process_tcp_tunnel_read(key.clone(), reader, core_tx.clone()).await;
+        let _ = stream.shutdown(Shutdown::Both);
+    };
+    let w = async {
+        let _ = process_tcp_tunnel_write(tid, key.clone(), core_rx.clone(),
+                                         writer, &mut port_map).await;
+        let _ = stream.shutdown(Shutdown::Both);
+    };
     let _ = join!(r, w).await;
 
     info!("Tcp tunnel {} broken", tid);
@@ -375,10 +378,6 @@ async fn tcp_tunnel_core_task(tid: u32, server_addr: String, key: Vec<u8>,
     for (_, value) in port_map.iter() {
         value.tx.send(TunnelPortMsg::ClosePort).await;
     }
-
-    /*task::spawn(async move {
-        tcp_tunnel_core_task(tid, server_addr, key, core_rx, core_tx).await;
-    });*/
 }
 
 async fn process_tcp_tunnel_read(key: Vec<u8>, stream: &mut &TcpStream,
@@ -457,6 +456,7 @@ async fn process_tcp_tunnel_write(tid: u32, key: Vec<u8>,
                 if duration.num_milliseconds() > ALIVE_TIMEOUT_TIME_MS {
                     break
                 }
+
                 stream.write_all(&pack_cs_heartbeat_msg()).await?;
             },
 
@@ -504,8 +504,7 @@ async fn process_tunnel_msg(tid: u32, msg: TunnelMsg,
             }
 
             let data = encryptor.encrypt(&buf[..]);
-            let packed_buffer =
-                pack_cs_connect_domain_msg(id, &data[..], port);
+            let packed_buffer = pack_cs_connect_domain_msg(id, &data[..], port);
             stream.write_all(&packed_buffer[..]).await?;
         },
 
