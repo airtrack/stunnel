@@ -10,7 +10,7 @@ extern crate futures_timer;
 
 pub mod logger;
 pub mod tcp;
-pub mod ucp;
+// pub mod ucp;
 pub mod timer;
 pub mod client;
 pub mod server;
@@ -131,6 +131,7 @@ mod protocol {
         buf
     }
 
+    /*
     pub fn read_cmd(buf: &[u8]) -> u8 {
         buf[0]
     }
@@ -159,4 +160,5 @@ mod protocol {
         let (_, len) = read_id_len(buf);
         len + 9
     }
+    */
 }

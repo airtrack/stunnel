@@ -1,8 +1,8 @@
 use std::thread;
-use std::cell::RefCell;
+// use std::cell::RefCell;
 use std::collections::HashMap;
 use std::str::from_utf8;
-use std::rc::Rc;
+// use std::rc::Rc;
 use std::vec::Vec;
 use std::io::Write;
 use std::net::TcpStream;
@@ -12,7 +12,7 @@ use crossbeam_channel::{Sender, Receiver};
 use crossbeam_channel as channel;
 
 use time::{get_time, Timespec};
-use super::ucp::{UcpServer, UcpStream};
+// use super::ucp::{UcpServer, UcpStream};
 use super::tcp::{Tcp, TcpError};
 use super::timer::Timer;
 use super::cryptor::*;
@@ -83,9 +83,9 @@ impl Clone for TcpTunnel {
 }
 
 impl UcpTunnel {
-    pub fn new(key: Vec<u8>, listen_addr: String) {
+    pub fn new(_key: Vec<u8>, _listen_addr: String) {
         thread::spawn(move || {
-            ucp_tunnel_core_task(key, listen_addr);
+            // ucp_tunnel_core_task(key, listen_addr);
         });
     }
 }
@@ -213,6 +213,7 @@ fn tunnel_port_task(read_port: TunnelReadPort, write_port: TunnelWritePort) {
     tunnel_port_read(s, read_port);
 }
 
+/*
 struct UcpTask {
     key: Vec<u8>,
     buffer: Vec<u8>,
@@ -424,6 +425,7 @@ fn ucp_tunnel_core_task(key: Vec<u8>, listen_addr: String) {
 
     ucp_server.run();
 }
+*/
 
 fn tcp_tunnel_core_task(key: Vec<u8>, sender: TcpStream) {
     let (core_tx, core_rx) = channel::bounded(10000);

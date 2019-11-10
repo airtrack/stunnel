@@ -1,12 +1,14 @@
-use std::net::{UdpSocket, SocketAddr};
+use std::net::SocketAddr;
 use std::collections::{VecDeque, HashMap};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::cmp::min;
 use std::io::Error;
 use std::rc::Rc;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use std::vec::Vec;
+use async_std::net::UdpSocket;
 use crc::crc32;
 use rand::random;
 use time::{Timespec, get_time};
@@ -211,6 +213,7 @@ impl UcpPacket {
 
 type UcpPacketQueue = VecDeque<Box<UcpPacket>>;
 
+#[derive(Clone, Copy)]
 enum UcpState {
     NONE,
     ACCEPTING,
@@ -218,50 +221,51 @@ enum UcpState {
     ESTABLISHED
 }
 
-pub struct UcpStream {
-    socket: UdpSocket,
+pub struct UcpStream<'a> {
+    socket: &'a UdpSocket,
     remote_addr: SocketAddr,
     initial_time: Timespec,
-    alive_time: Timespec,
-    heartbeat: Timespec,
-    state: UcpState,
+    alive_time: Cell<Timespec>,
+    heartbeat: Cell<Timespec>,
+    state: Cell<UcpState>,
 
-    send_queue: UcpPacketQueue,
-    recv_queue: UcpPacketQueue,
-    send_buffer: UcpPacketQueue,
+    send_queue: Cell<UcpPacketQueue>,
+    recv_queue: Cell<UcpPacketQueue>,
+    send_buffer: Cell<UcpPacketQueue>,
 
-    ack_list: Vec<(u32, u32)>,
-    session_id: u32,
-    local_window: u32,
-    remote_window: u32,
-    seq: u32,
-    una: u32,
-    rto: u32,
+    ack_list: Cell<Vec<(u32, u32)>>,
+    session_id: Cell<u32>,
+    local_window: Cell<u32>,
+    remote_window: AtomicU32,
+    seq: AtomicU32,
+    una: AtomicU32,
+    rto: AtomicU32,
 
-    on_update: Rc<RefCell<Option<Box<dyn FnMut(&mut UcpStream) -> bool>>>>,
-    on_broken: Rc<RefCell<Option<Box<dyn FnMut(&mut UcpStream)>>>>
+    on_update: Rc<RefCell<Option<Box<dyn FnMut(&UcpStream) -> bool>>>>,
+    on_broken: Rc<RefCell<Option<Box<dyn FnMut(&UcpStream)>>>>
 }
 
-impl UcpStream {
-    fn new(socket: UdpSocket, remote_addr: SocketAddr) -> UcpStream {
+impl<'a> UcpStream<'a> {
+    fn new(socket: &'a UdpSocket, remote_addr: SocketAddr) -> UcpStream {
         UcpStream {
             socket: socket,
             remote_addr: remote_addr,
             initial_time: get_time(),
-            alive_time: get_time(),
-            heartbeat: get_time(),
-            state: UcpState::NONE,
+            alive_time: Cell::new(get_time()),
+            heartbeat: Cell::new(get_time()),
+            state: Cell::new(UcpState::NONE),
 
-            send_queue: UcpPacketQueue::new(),
-            recv_queue: UcpPacketQueue::new(),
-            send_buffer: UcpPacketQueue::new(),
+            send_queue: Cell::new(UcpPacketQueue::new()),
+            recv_queue: Cell::new(UcpPacketQueue::new()),
+            send_buffer: Cell::new(UcpPacketQueue::new()),
 
-            ack_list: Vec::new(),
-            local_window: DEFAULT_WINDOW,
-            remote_window: DEFAULT_WINDOW,
-            rto: DEFAULT_RTO,
-            session_id: 0,
-            seq: 0, una: 0,
+            ack_list: Cell::new(Vec::new()),
+            session_id: Cell::new(0),
+            local_window: Cell::new(DEFAULT_WINDOW),
+            remote_window: AtomicU32::new(DEFAULT_WINDOW),
+            seq: AtomicU32::new(0),
+            una: AtomicU32::new(0),
+            rto: AtomicU32::new(DEFAULT_RTO),
 
             on_update: Rc::new(RefCell::new(None)),
             on_broken: Rc::new(RefCell::new(None))
@@ -269,23 +273,26 @@ impl UcpStream {
     }
 
     pub fn is_send_buffer_overflow(&self) -> bool {
-        self.send_buffer.len() >= self.remote_window as usize
+        let remote_window = self.remote_window.load(Ordering::Relaxed);
+        let send_buffer = unsafe { &mut *self.send_buffer.as_ptr() };
+        send_buffer.len() >= remote_window as usize
     }
 
     pub fn set_on_update<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut(&mut UcpStream) -> bool {
+        where CB: 'static + FnMut(&UcpStream) -> bool {
         self.on_update = Rc::new(RefCell::new(Some(Box::new(cb))));
     }
 
     pub fn set_on_broken<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut(&mut UcpStream) {
+        where CB: 'static + FnMut(&UcpStream) {
         self.on_broken = Rc::new(RefCell::new(Some(Box::new(cb))));
     }
 
-    pub fn send(&mut self, buf: &[u8]) {
+    pub fn send(&self, buf: &[u8]) {
         let mut pos = 0;
+        let send_buffer = unsafe { &mut *self.send_buffer.as_ptr() };
 
-        if let Some(packet) = self.send_buffer.back_mut() {
+        if let Some(packet) = send_buffer.back_mut() {
             let remain = min(packet.remaining_load(), buf.len());
             if remain > 0 {
                 packet.payload_write_slice(&buf[0..remain]);
@@ -299,12 +306,14 @@ impl UcpStream {
         }
     }
 
-    pub fn recv(&mut self, buf: &mut [u8]) -> usize {
+    pub fn recv(&self, buf: &mut [u8]) -> usize {
         let mut size = 0;
+        let una = self.una.load(Ordering::Relaxed);
+        let recv_queue = unsafe { &mut *self.recv_queue.as_ptr() };
 
-        while size < buf.len() && !self.recv_queue.is_empty() {
-            if let Some(packet) = self.recv_queue.front_mut() {
-                let diff = (packet.seq - self.una) as i32;
+        while size < buf.len() && !recv_queue.is_empty() {
+            if let Some(packet) = recv_queue.front_mut() {
+                let diff = (packet.seq - una) as i32;
                 if diff >= 0 {
                     break
                 }
@@ -312,25 +321,25 @@ impl UcpStream {
                 size += packet.payload_read_slice(&mut buf[size..]);
             }
 
-            let no_remain_payload = self.recv_queue.front().map(
+            let no_remain_payload = recv_queue.front().map(
                 |packet| packet.payload_remaining() == 0).unwrap();
 
             if no_remain_payload {
-                self.recv_queue.pop_front();
+                recv_queue.pop_front();
             }
         }
 
         size
     }
 
-    fn update(&mut self) -> bool {
+    async fn update(&self) -> bool {
         let mut alive = self.check_if_alive();
 
         if alive {
-            self.do_heartbeat();
-            self.send_ack_list();
-            self.timeout_resend();
-            self.send_pending_packets();
+            self.do_heartbeat().await;
+            self.send_ack_list().await;
+            self.timeout_resend().await;
+            self.send_pending_packets().await;
             let on_update = self.on_update.clone();
             alive = (on_update.borrow_mut().as_mut().unwrap())(self);
         }
@@ -338,42 +347,43 @@ impl UcpStream {
         alive
     }
 
-    fn check_if_alive(&mut self) -> bool {
+    fn check_if_alive(&self) -> bool {
         let now = get_time();
-        let interval = (now - self.alive_time).num_milliseconds();
+        let interval = (now - self.alive_time.get()).num_milliseconds();
         let alive = interval < UCP_STREAM_BROKEN_MILLIS;
 
         if !alive {
             let on_broken = self.on_broken.clone();
             (on_broken.borrow_mut().as_mut().unwrap())(self);
             error!("ucp alive timeout, remote address: {}, session: {}",
-                   self.remote_addr, self.session_id);
+                   self.remote_addr, self.session_id.get());
         }
 
         alive
     }
 
-    fn do_heartbeat(&mut self) {
+    async fn do_heartbeat(&self) {
         let now = get_time();
-        let interval = (now - self.heartbeat).num_milliseconds();
+        let interval = (now - self.heartbeat.get()).num_milliseconds();
 
         if interval >= HEARTBEAT_INTERVAL_MILLIS {
             let mut heartbeat = self.new_noseq_packet(CMD_HEARTBEAT);
-            self.send_packet_directly(&mut heartbeat);
-            self.heartbeat = now;
+            self.send_packet_directly(&mut heartbeat).await;
+            self.heartbeat.set(now);
         }
     }
 
-    fn send_ack_list(&mut self) {
-        if self.ack_list.is_empty() {
+    async fn send_ack_list(&self) {
+        let ack_list = self.ack_list.take();
+        if ack_list.is_empty() {
             return
         }
 
         let mut packet = self.new_noseq_packet(CMD_ACK);
 
-        for &(seq, timestamp) in self.ack_list.iter() {
+        for &(seq, timestamp) in ack_list.iter() {
             if packet.remaining_load() < 8 {
-                self.send_packet_directly(&mut packet);
+                self.send_packet_directly(&mut packet).await;
                 packet = self.new_noseq_packet(CMD_ACK);
             }
 
@@ -381,38 +391,41 @@ impl UcpStream {
             packet.payload_write_u32(timestamp);
         }
 
-        self.send_packet_directly(&mut packet);
-        self.ack_list.clear();
+        self.send_packet_directly(&mut packet).await;
     }
 
-    fn timeout_resend(&mut self) {
+    async fn timeout_resend(&self) {
         let now = self.timestamp();
+        let una = self.una.load(Ordering::Relaxed);
+        let rto = self.rto.load(Ordering::Relaxed);
+        let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
 
-        for packet in self.send_queue.iter_mut() {
+        for packet in send_queue.iter_mut() {
             let interval = now - packet.timestamp;
             let skip_resend = packet.skip_times >= SKIP_RESEND_TIMES;
 
-            if interval >= self.rto || skip_resend {
+            if interval >= rto || skip_resend {
                 packet.skip_times = 0;
-                packet.window = self.local_window;
-                packet.una = self.una;
+                packet.window = self.local_window.get();
+                packet.una = una;
                 packet.timestamp = now;
                 packet.xmit += 1;
-                packet.pack();
 
-                let _ = self.socket.send_to(
-                    packet.packed_buffer(), self.remote_addr);
+                self.send_packet_directly(packet).await;
             }
         }
     }
 
-    fn send_pending_packets(&mut self) {
+    async fn send_pending_packets(&self) {
         let now = self.timestamp();
-        let window = self.remote_window as usize;
+        let una = self.una.load(Ordering::Relaxed);
+        let window = self.remote_window.load(Ordering::Relaxed) as usize;
+        let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
+        let send_buffer = unsafe { &mut *self.send_buffer.as_ptr() };
 
-        while self.send_queue.len() < window {
-            if let Some(q) = self.send_queue.front() {
-                if let Some(p) = self.send_buffer.front() {
+        while send_queue.len() < window {
+            if let Some(q) = send_queue.front() {
+                if let Some(p) = send_buffer.front() {
                     let seq_diff = (p.seq - q.seq) as usize;
                     if seq_diff >= window {
                         break
@@ -420,103 +433,103 @@ impl UcpStream {
                 }
             }
 
-            if let Some(mut packet) = self.send_buffer.pop_front() {
-                packet.window = self.local_window;
-                packet.una = self.una;
+            if let Some(mut packet) = send_buffer.pop_front() {
+                packet.window = self.local_window.get();
+                packet.una = una;
                 packet.timestamp = now;
 
-                self.send_packet_directly(&mut packet);
-                self.send_queue.push_back(packet);
+                self.send_packet_directly(&mut packet).await;
+                send_queue.push_back(packet);
             } else {
                 break
             }
         }
     }
 
-    fn process_packet(&mut self, packet: Box<UcpPacket>,
-                      remote_addr: SocketAddr) {
+    async fn process_packet(&self, packet: Box<UcpPacket>,
+                            remote_addr: SocketAddr) {
         if self.remote_addr != remote_addr {
             error!("unexpect packet from {}, expect from {}",
                    remote_addr, self.remote_addr);
             return
         }
 
-        match self.state {
+        match self.state.get() {
             UcpState::NONE => if packet.is_syn() {
                 self.accepting(packet);
             },
             _ => {
-                self.processing(packet)
+                self.processing(packet).await;
             }
         }
     }
 
-    fn connecting(&mut self) {
-        self.state = UcpState::CONNECTING;
-        self.session_id = random::<u32>();
+    fn connecting(&self) {
+        self.state.set(UcpState::CONNECTING);
+        self.session_id.set(random::<u32>());
 
         let syn = self.new_packet(CMD_SYN);
         self.send_packet(syn);
         info!("connecting ucp server {}, session: {}",
-              self.remote_addr, self.session_id);
+              self.remote_addr, self.session_id.get());
     }
 
-    fn accepting(&mut self, packet: Box<UcpPacket>) {
-        self.state = UcpState::ACCEPTING;
-        self.session_id = packet.session_id;
-        self.remote_window = packet.window;
-        self.una = packet.seq + 1;
+    fn accepting(&self, packet: Box<UcpPacket>) {
+        self.state.set(UcpState::ACCEPTING);
+        self.session_id.set(packet.session_id);
+        self.una.store(packet.seq + 1, Ordering::Relaxed);
+        self.remote_window.store(packet.window, Ordering::Relaxed);
 
         let mut syn_ack = self.new_packet(CMD_SYN_ACK);
         syn_ack.payload_write_u32(packet.seq);
         syn_ack.payload_write_u32(packet.timestamp);
         self.send_packet(syn_ack);
         info!("accepting ucp client {}, session: {}",
-              self.remote_addr, self.session_id);
+              self.remote_addr, self.session_id.get());
     }
 
-    fn processing(&mut self, packet: Box<UcpPacket>) {
-        if self.session_id != packet.session_id {
+    async fn processing(&self, packet: Box<UcpPacket>) {
+        if self.session_id.get() != packet.session_id {
             error!("unexpect session_id: {}, expect {}",
-                   packet.session_id, self.session_id);
+                   packet.session_id, self.session_id.get());
             return
         }
 
-        self.alive_time = get_time();
-        self.remote_window = packet.window;
+        self.alive_time.set(get_time());
+        self.remote_window.store(packet.window, Ordering::Relaxed);
 
-        match self.state {
+        match self.state.get() {
             UcpState::ACCEPTING => {
-                self.process_state_accepting(packet);
+                self.process_state_accepting(packet).await;
             },
             UcpState::CONNECTING => {
-                self.process_state_connecting(packet);
+                self.process_state_connecting(packet).await;
             },
             UcpState::ESTABLISHED => {
-                self.process_state_established(packet);
+                self.process_state_established(packet).await;
             },
             UcpState::NONE => {}
         }
     }
 
-    fn process_state_accepting(&mut self, mut packet: Box<UcpPacket>) {
+    async fn process_state_accepting(&self, mut packet: Box<UcpPacket>) {
         if packet.cmd == CMD_ACK && packet.payload == 8 {
             let seq = packet.payload_read_u32();
             let timestamp = packet.payload_read_u32();
 
             if self.process_an_ack(seq, timestamp) {
-                self.state = UcpState::ESTABLISHED;
+                self.state.set(UcpState::ESTABLISHED);
                 info!("{} established, session: {}",
-                      self.remote_addr, self.session_id);
+                      self.remote_addr, self.session_id.get());
             }
         }
     }
 
-    fn process_state_connecting(&mut self, packet: Box<UcpPacket>) {
-        self.process_syn_ack(packet);
+    async fn process_state_connecting(&self, packet: Box<UcpPacket>) {
+        self.process_syn_ack(packet).await;
     }
 
-    fn process_state_established(&mut self, packet: Box<UcpPacket>) {
+    async fn process_state_established(&self, packet: Box<UcpPacket>) {
         self.process_una(packet.una);
 
         match packet.cmd {
@@ -527,10 +540,10 @@ impl UcpStream {
                 self.process_data(packet);
             },
             CMD_SYN_ACK => {
-                self.process_syn_ack(packet);
+                self.process_syn_ack(packet).await;
             },
             CMD_HEARTBEAT => {
-                self.process_heartbeat();
+                self.process_heartbeat().await;
             },
             CMD_HEARTBEAT_ACK => {
                 self.process_heartbeat_ack();
@@ -539,20 +552,22 @@ impl UcpStream {
         }
     }
 
-    fn process_una(&mut self, una: u32) {
-        while !self.send_queue.is_empty() {
-            let diff = self.send_queue.front().map(
+    fn process_una(&self, una: u32) {
+        let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
+
+        while !send_queue.is_empty() {
+            let diff = send_queue.front().map(
                 |packet| (packet.seq - una) as i32).unwrap();
 
             if diff < 0 {
-                self.send_queue.pop_front();
+                send_queue.pop_front();
             } else {
                 break
             }
         }
     }
 
-    fn process_ack(&mut self, mut packet: Box<UcpPacket>) {
+    fn process_ack(&self, mut packet: Box<UcpPacket>) {
         if packet.cmd == CMD_ACK && packet.payload % 8 == 0 {
             while packet.payload_remaining() > 0 {
                 let seq = packet.payload_read_u32();
@@ -562,17 +577,20 @@ impl UcpStream {
         }
     }
 
-    fn process_data(&mut self, packet: Box<UcpPacket>) {
-        self.ack_list.push((packet.seq, packet.timestamp));
+    fn process_data(&self, packet: Box<UcpPacket>) {
+        let ack_list = unsafe { &mut *self.ack_list.as_ptr() };
+        ack_list.push((packet.seq, packet.timestamp));
+        let una = self.una.load(Ordering::Relaxed);
 
-        let una_diff = (packet.seq - self.una) as i32;
+        let una_diff = (packet.seq - una) as i32;
         if una_diff < 0 {
             return
         }
 
         let mut pos = 0;
-        for i in 0..self.recv_queue.len() {
-            let seq_diff = (packet.seq - self.recv_queue[i].seq) as i32;
+        let recv_queue = unsafe { &mut *self.recv_queue.as_ptr() };
+        for i in 0..recv_queue.len() {
+            let seq_diff = (packet.seq - recv_queue[i].seq) as i32;
 
             if seq_diff == 0 {
                 return
@@ -583,18 +601,18 @@ impl UcpStream {
             }
         }
 
-        self.recv_queue.insert(pos, packet);
+        recv_queue.insert(pos, packet);
 
-        for i in pos..self.recv_queue.len() {
-            if self.recv_queue[i].seq == self.una {
-                self.una += 1;
+        for i in pos..recv_queue.len() {
+            if recv_queue[i].seq == self.una.load(Ordering::Relaxed) {
+                self.una.fetch_add(1, Ordering::Relaxed);
             } else {
                 break
             }
         }
     }
 
-    fn process_syn_ack(&mut self, mut packet: Box<UcpPacket>) {
+    async fn process_syn_ack(&self, mut packet: Box<UcpPacket>) {
         if packet.cmd == CMD_SYN_ACK && packet.payload == 8 {
             let seq = packet.payload_read_u32();
             let timestamp = packet.payload_read_u32();
@@ -602,15 +620,15 @@ impl UcpStream {
             let mut ack = self.new_noseq_packet(CMD_ACK);
             ack.payload_write_u32(packet.seq);
             ack.payload_write_u32(packet.timestamp);
-            self.send_packet_directly(&mut ack);
+            self.send_packet_directly(&mut ack).await;
 
-            match self.state {
+            match self.state.get() {
                 UcpState::CONNECTING => {
                     if self.process_an_ack(seq, timestamp) {
-                        self.state = UcpState::ESTABLISHED;
-                        self.una = packet.seq + 1;
+                        self.state.set(UcpState::ESTABLISHED);
+                        self.una.store(packet.seq + 1, Ordering::Relaxed);
                         info!("{} established, session: {}",
-                              self.remote_addr, self.session_id);
+                              self.remote_addr, self.session_id.get());
                     }
                 },
                 _ => {}
@@ -618,26 +636,28 @@ impl UcpStream {
         }
     }
 
-    fn process_heartbeat(&mut self) {
+    async fn process_heartbeat(&self) {
         let mut heartbeat_ack = self.new_noseq_packet(CMD_HEARTBEAT_ACK);
-        self.send_packet_directly(&mut heartbeat_ack);
+        self.send_packet_directly(&mut heartbeat_ack).await;
     }
 
-    fn process_heartbeat_ack(&mut self) {
-        self.alive_time = get_time();
+    fn process_heartbeat_ack(&self) {
+        self.alive_time.set(get_time());
     }
 
-    fn process_an_ack(&mut self, seq: u32, timestamp: u32) -> bool {
+    fn process_an_ack(&self, seq: u32, timestamp: u32) -> bool {
         let rtt = self.timestamp() - timestamp;
-        self.rto = (self.rto + rtt) / 2;
+        let rto = self.rto.load(Ordering::Relaxed);
+        self.rto.store((rto + rtt) / 2, Ordering::Relaxed);
 
-        for i in 0..self.send_queue.len() {
-            if self.send_queue[i].seq == seq {
-                self.send_queue.remove(i);
+        let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
+        for i in 0..send_queue.len() {
+            if send_queue[i].seq == seq {
+                send_queue.remove(i);
                 return true
             } else {
-                if self.send_queue[i].timestamp <= timestamp {
-                    self.send_queue[i].skip_times += 1;
+                if send_queue[i].timestamp <= timestamp {
+                    send_queue[i].skip_times += 1;
                 }
             }
         }
@@ -645,14 +665,14 @@ impl UcpStream {
         false
     }
 
-    fn new_packet(&mut self, cmd: u8) -> Box<UcpPacket> {
+    fn new_packet(&self, cmd: u8) -> Box<UcpPacket> {
         let mut packet = Box::new(UcpPacket::new());
 
-        packet.session_id = self.session_id;
+        packet.session_id = self.session_id.get();
         packet.timestamp = self.timestamp();
-        packet.window = self.local_window;
+        packet.window = self.local_window.get();
         packet.seq = self.next_seq();
-        packet.una = self.una;
+        packet.una = self.una.load(Ordering::Relaxed);
         packet.cmd = cmd;
 
         packet
@@ -661,10 +681,10 @@ impl UcpStream {
     fn new_noseq_packet(&self, cmd: u8) -> Box<UcpPacket> {
         let mut packet = Box::new(UcpPacket::new());
 
-        packet.session_id = self.session_id;
+        packet.session_id = self.session_id.get();
         packet.timestamp = self.timestamp();
-        packet.window = self.local_window;
-        packet.una = self.una;
+        packet.window = self.local_window.get();
+        packet.una = self.una.load(Ordering::Relaxed);
         packet.cmd = cmd;
 
         packet
@@ -674,12 +694,11 @@ impl UcpStream {
         (get_time() - self.initial_time).num_milliseconds() as u32
     }
 
-    fn next_seq(&mut self) -> u32 {
-        self.seq += 1;
-        self.seq
+    fn next_seq(&self) -> u32 {
+        self.seq.fetch_add(1, Ordering::Relaxed) + 1
     }
 
-    fn make_packet_send(&mut self, buf: &[u8]) {
+    fn make_packet_send(&self, buf: &[u8]) {
         let buf_len = buf.len();
 
         let mut pos = 0;
@@ -695,16 +714,18 @@ impl UcpStream {
         }
     }
 
-    fn send_packet(&mut self, packet: Box<UcpPacket>) {
-        self.send_buffer.push_back(packet);
+    fn send_packet(&self, packet: Box<UcpPacket>) {
+        let send_buffer = unsafe { &mut *self.send_buffer.as_ptr() };
+        send_buffer.push_back(packet);
     }
 
-    fn send_packet_directly(&self, packet: &mut Box<UcpPacket>) {
+    async fn send_packet_directly(&self, packet: &mut Box<UcpPacket>) {
         packet.pack();
-        let _ = self.socket.send_to(packet.packed_buffer(), self.remote_addr);
+        let _ = self.socket.send_to(packet.packed_buffer(), self.remote_addr).await;
     }
 }
 
+/*
 pub struct UcpClient {
     socket: UdpSocket,
     ucp: UcpStream,
@@ -717,7 +738,7 @@ impl UcpClient {
         let remote_addr = SocketAddr::from_str(server_addr).unwrap();
 
         let socket2 = socket.try_clone().unwrap();
-        let mut ucp = UcpStream::new(socket2, remote_addr);
+        let ucp = UcpStream::new(socket2, remote_addr);
         ucp.connecting();
 
         socket.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
@@ -725,12 +746,12 @@ impl UcpClient {
     }
 
     pub fn set_on_update<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut(&mut UcpStream) -> bool {
+        where CB: 'static + FnMut(&UcpStream) -> bool {
         self.ucp.set_on_update(cb);
     }
 
     pub fn set_on_broken<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut(&mut UcpStream) {
+        where CB: 'static + FnMut(&UcpStream) {
         self.ucp.set_on_broken(cb);
     }
 
@@ -870,3 +891,4 @@ impl UcpServer {
         ucp_impl.borrow_mut().process_packet(packet, remote_addr);
     }
 }
+*/
