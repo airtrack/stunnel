@@ -2,9 +2,14 @@
 extern crate log;
 extern crate getopts;
 extern crate stunnel;
+extern crate async_std;
 
 use std::env;
-use std::net::TcpListener;
+
+use async_std::prelude::*;
+use async_std::net::TcpListener;
+use async_std::task;
+
 use stunnel::logger;
 use stunnel::cryptor::Cryptor;
 use stunnel::server::*;
@@ -45,15 +50,18 @@ fn main() {
         UcpTunnel::new(key.clone(), listen_addr.clone());
     }
 
-    let listener = TcpListener::bind(&listen_addr[..]).unwrap();
+    task::block_on(async move {
+        let listener = TcpListener::bind(&listen_addr).await.unwrap();
+        let mut incoming = listener.incoming();
 
-    for stream in listener.incoming() {
-        let key2 = key.clone();
-        match stream {
-            Ok(stream) => {
-                TcpTunnel::new(key2, stream);
-            },
-            Err(_) => {}
+        while let Some(stream) = incoming.next().await {
+            match stream {
+                Ok(stream) => {
+                    TcpTunnel::new(key.clone(), stream);
+                },
+
+                Err(_) => {}
+            }
         }
-    }
+    });
 }
