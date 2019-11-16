@@ -4,7 +4,6 @@ extern crate crc;
 extern crate crypto;
 extern crate time;
 extern crate rand;
-extern crate crossbeam_channel;
 extern crate async_std;
 extern crate futures_timer;
 

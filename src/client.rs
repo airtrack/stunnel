@@ -9,7 +9,6 @@ use std::vec::Vec;
 use async_std::prelude::*;
 use async_std::sync::{Sender, Receiver, channel};
 use async_std::net::TcpStream;
-use async_std::future::join;
 use async_std::task;
 
 use time::{get_time, Timespec};
@@ -370,7 +369,7 @@ async fn tcp_tunnel_core_task(tid: u32, server_addr: String, key: Vec<u8>,
                                          writer, &mut port_map).await;
         let _ = stream.shutdown(Shutdown::Both);
     };
-    let _ = join!(r, w).await;
+    let _ = r.join(w).await;
 
     info!("Tcp tunnel {} broken", tid);
     let _ = stream.shutdown(Shutdown::Both);

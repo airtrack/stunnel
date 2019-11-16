@@ -10,7 +10,6 @@ use std::time::Duration;
 use async_std::prelude::*;
 use async_std::sync::{Sender, Receiver, channel};
 use async_std::net::TcpStream;
-use async_std::future::join;
 use async_std::task;
 
 use time::{get_time, Timespec};
@@ -197,7 +196,7 @@ async fn tunnel_port_task(read_port: TunnelReadPort, write_port: TunnelWritePort
     let (reader, writer) = &mut (&stream, &stream);
     let w = tunnel_port_write(reader, &write_port);
     let r = tunnel_port_read(writer, &read_port);
-    let _ = join!(r, w).await;
+    let _ = r.join(w).await;
 
     read_port.drop().await;
     write_port.drop().await;
@@ -432,7 +431,7 @@ async fn tcp_tunnel_core_task(key: Vec<u8>, stream: TcpStream) {
                                          writer, &mut port_map).await;
         let _ = stream.shutdown(Shutdown::Both);
     };
-    let _ = join!(r, w).await;
+    let _ = r.join(w).await;
 
     for (_, value) in port_map.iter() {
         value.tx.send(TunnelPortMsg::ClosePort).await;

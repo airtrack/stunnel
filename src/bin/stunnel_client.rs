@@ -13,7 +13,6 @@ use std::str::from_utf8;
 use async_std::prelude::*;
 use async_std::net::TcpListener;
 use async_std::net::TcpStream;
-use async_std::future::join;
 use async_std::task;
 
 use stunnel::logger;
@@ -85,10 +84,7 @@ async fn run_tunnel_port(mut stream: TcpStream,
         },
 
         _ => {
-            write_port.close().await;
-            read_port.drop().await;
-            write_port.drop().await;
-            return
+            return write_port.close().await;
         }
     }
 
@@ -109,7 +105,7 @@ async fn run_tunnel_port(mut stream: TcpStream,
         let (reader, writer) = &mut (&stream, &stream);
         let r = process_read(reader, &write_port);
         let w = process_write(writer, &read_port);
-        let _ = join!(r, w).await;
+        let _ = r.join(w).await;
     } else {
         let _ = stream.shutdown(Shutdown::Both);
     }
