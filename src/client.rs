@@ -7,6 +7,7 @@ use std::time::Duration;
 use std::vec::Vec;
 
 use async_std::prelude::*;
+use async_std::io::Write;
 use async_std::sync::{Sender, Receiver, channel};
 use async_std::net::TcpStream;
 use async_std::task;
@@ -474,11 +475,13 @@ async fn process_tcp_tunnel_write(tid: u32, key: Vec<u8>,
     Ok(())
 }
 
-async fn process_tunnel_msg(tid: u32, msg: TunnelMsg,
-                            alive_time: &mut Timespec,
-                            port_map: &mut PortMap,
-                            encryptor: &mut Cryptor,
-                            stream: &mut &TcpStream) -> std::io::Result<()> {
+async fn process_tunnel_msg<W: Write + Unpin>(
+    tid: u32, msg: TunnelMsg,
+    alive_time: &mut Timespec,
+    port_map: &mut PortMap,
+    encryptor: &mut Cryptor,
+    stream: &mut W
+) -> std::io::Result<()> {
     match msg {
         TunnelMsg::CSOpenPort(id, tx) => {
             port_map.insert(id, PortMapValue {

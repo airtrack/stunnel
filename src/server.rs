@@ -8,6 +8,7 @@ use std::net::Shutdown;
 use std::time::Duration;
 
 use async_std::prelude::*;
+use async_std::io::Write;
 use async_std::sync::{Sender, Receiver, channel};
 use async_std::net::TcpStream;
 use async_std::task;
@@ -552,12 +553,14 @@ async fn process_tcp_tunnel_write(key: &Vec<u8>,
     Ok(())
 }
 
-async fn process_tunnel_msg(msg: TunnelMsg,
-                            core_tx: &Sender<TunnelMsg>,
-                            alive_time: &mut Timespec,
-                            port_map: &mut PortMap,
-                            encryptor: &mut Cryptor,
-                            stream: &mut &TcpStream) -> std::io::Result<()> {
+async fn process_tunnel_msg<W: Write + Unpin>(
+    msg: TunnelMsg,
+    core_tx: &Sender<TunnelMsg>,
+    alive_time: &mut Timespec,
+    port_map: &mut PortMap,
+    encryptor: &mut Cryptor,
+    stream: &mut W
+) -> std::io::Result<()> {
     match msg {
         TunnelMsg::CSHeartbeat => {
             *alive_time = get_time();
