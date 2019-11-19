@@ -8,7 +8,6 @@ extern crate async_std;
 extern crate futures_timer;
 
 pub mod logger;
-pub mod tcp;
 // pub mod ucp;
 pub mod timer;
 pub mod client;
