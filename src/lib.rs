@@ -6,9 +6,10 @@ extern crate time;
 extern crate rand;
 extern crate async_std;
 extern crate futures_timer;
+extern crate crossbeam_utils;
 
 pub mod logger;
-// pub mod ucp;
+pub mod ucp;
 pub mod timer;
 pub mod client;
 pub mod server;

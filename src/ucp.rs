@@ -1,17 +1,22 @@
 use std::net::SocketAddr;
-use std::collections::{VecDeque, HashMap};
-use std::cell::{Cell, RefCell};
+use std::collections::{VecDeque};
+use std::cell::Cell;
 use std::cmp::min;
-use std::io::Error;
-use std::rc::Rc;
+use std::io::{Error, ErrorKind};
+use std::pin::Pin;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
+use std::task::{Context, Poll, Waker};
 use std::vec::Vec;
+use async_std::io::{self, Read, Write};
 use async_std::net::UdpSocket;
+use async_std::task;
 use crc::crc32;
 use rand::random;
 use time::{Timespec, get_time};
+use crossbeam_utils::Backoff;
 
 const CMD_SYN: u8 = 128;
 const CMD_SYN_ACK: u8 = 129;
@@ -26,6 +31,7 @@ const HEARTBEAT_INTERVAL_MILLIS: i64 = 2500;
 const UCP_STREAM_BROKEN_MILLIS: i64 = 20000;
 const SKIP_RESEND_TIMES: u32 = 2;
 
+#[derive(Clone)]
 struct UcpPacket {
     buf: [u8; 1400],
     size: usize,
@@ -221,8 +227,10 @@ enum UcpState {
     ESTABLISHED
 }
 
-pub struct UcpStream<'a> {
-    socket: &'a UdpSocket,
+struct InnerStream {
+    lock: AtomicUsize,
+    alive: AtomicBool,
+    socket: Arc<UdpSocket>,
     remote_addr: SocketAddr,
     initial_time: Timespec,
     alive_time: Cell<Timespec>,
@@ -233,21 +241,37 @@ pub struct UcpStream<'a> {
     recv_queue: Cell<UcpPacketQueue>,
     send_buffer: Cell<UcpPacketQueue>,
 
+    read_waker: Cell<Option<Waker>>,
+    write_waker: Cell<Option<Waker>>,
+
     ack_list: Cell<Vec<(u32, u32)>>,
     session_id: Cell<u32>,
     local_window: Cell<u32>,
-    remote_window: AtomicU32,
-    seq: AtomicU32,
-    una: AtomicU32,
-    rto: AtomicU32,
-
-    on_update: Rc<RefCell<Option<Box<dyn FnMut(&UcpStream) -> bool>>>>,
-    on_broken: Rc<RefCell<Option<Box<dyn FnMut(&UcpStream)>>>>
+    remote_window: Cell<u32>,
+    seq: Cell<u32>,
+    una: Cell<u32>,
+    rto: Cell<u32>,
 }
 
-impl<'a> UcpStream<'a> {
-    fn new(socket: &'a UdpSocket, remote_addr: SocketAddr) -> UcpStream {
-        UcpStream {
+unsafe impl Send for InnerStream {}
+unsafe impl Sync for InnerStream {}
+
+struct Lock<'a> {
+    inner: &'a InnerStream
+}
+
+impl Drop for Lock<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        self.inner.unlock();
+    }
+}
+
+impl InnerStream {
+    fn new(socket: Arc<UdpSocket>, remote_addr: SocketAddr) -> Self {
+        InnerStream {
+            lock: AtomicUsize::new(0),
+            alive: AtomicBool::new(true),
             socket: socket,
             remote_addr: remote_addr,
             initial_time: get_time(),
@@ -259,56 +283,108 @@ impl<'a> UcpStream<'a> {
             recv_queue: Cell::new(UcpPacketQueue::new()),
             send_buffer: Cell::new(UcpPacketQueue::new()),
 
+            read_waker: Cell::new(None),
+            write_waker: Cell::new(None),
+
             ack_list: Cell::new(Vec::new()),
             session_id: Cell::new(0),
             local_window: Cell::new(DEFAULT_WINDOW),
-            remote_window: AtomicU32::new(DEFAULT_WINDOW),
-            seq: AtomicU32::new(0),
-            una: AtomicU32::new(0),
-            rto: AtomicU32::new(DEFAULT_RTO),
-
-            on_update: Rc::new(RefCell::new(None)),
-            on_broken: Rc::new(RefCell::new(None))
+            remote_window: Cell::new(DEFAULT_WINDOW),
+            seq: Cell::new(0),
+            una: Cell::new(0),
+            rto: Cell::new(DEFAULT_RTO),
         }
     }
 
-    pub fn is_send_buffer_overflow(&self) -> bool {
-        let remote_window = self.remote_window.load(Ordering::Relaxed);
-        let send_buffer = unsafe { &mut *self.send_buffer.as_ptr() };
-        send_buffer.len() >= remote_window as usize
-    }
+    async fn input(&self, packet: Box<UcpPacket>, remote_addr: SocketAddr) {
+        if self.remote_addr != remote_addr {
+            error!("unexpect packet from {}, expect from {}",
+                   remote_addr, self.remote_addr);
+            return
+        }
 
-    pub fn set_on_update<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut(&UcpStream) -> bool {
-        self.on_update = Rc::new(RefCell::new(Some(Box::new(cb))));
-    }
+        let _l = self.lock();
 
-    pub fn set_on_broken<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut(&UcpStream) {
-        self.on_broken = Rc::new(RefCell::new(Some(Box::new(cb))));
-    }
-
-    pub fn send(&self, buf: &[u8]) {
-        let mut pos = 0;
-        let send_buffer = unsafe { &mut *self.send_buffer.as_ptr() };
-
-        if let Some(packet) = send_buffer.back_mut() {
-            let remain = min(packet.remaining_load(), buf.len());
-            if remain > 0 {
-                packet.payload_write_slice(&buf[0..remain]);
+        let state = self.state.get();
+        match state {
+            UcpState::NONE => if packet.is_syn() {
+                self.accepting(packet);
+            },
+            _ => {
+                self.processing(packet).await;
             }
-
-            pos = remain;
-        }
-
-        if pos < buf.len() {
-            self.make_packet_send(&buf[pos..]);
         }
     }
 
-    pub fn recv(&self, buf: &mut [u8]) -> usize {
+    async fn output(&self) {
+        let _l = self.lock();
+
+        if self.check_if_alive() {
+            self.do_heartbeat().await;
+            self.send_ack_list().await;
+            self.timeout_resend().await;
+            self.send_pending_packets().await;
+        } else {
+            if let Some(w) = self.read_waker.take() {
+                w.wake()
+            }
+            if let Some(w) = self.write_waker.take() {
+                w.wake()
+            }
+        }
+    }
+
+    fn poll_read(&self, cx: &mut Context, buf: &mut [u8]) -> Poll<std::io::Result<usize>> {
+        let _l = self.lock();
+
+        if !self.alive() {
+            return Poll::Ready(Err(Error::from(ErrorKind::Other)));
+        }
+
+        let n = self.recv(buf);
+        if n == 0 {
+            self.read_waker.set(Some(cx.waker().clone()));
+            Poll::Pending
+        } else {
+            Poll::Ready(Ok(n))
+        }
+    }
+
+    fn poll_write(&self, cx: &mut Context, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+        let _l = self.lock();
+
+        if !self.alive() {
+            return Poll::Ready(Err(Error::from(ErrorKind::Other)));
+        }
+
+        if self.is_send_buffer_overflow() {
+            self.write_waker.set(Some(cx.waker().clone()));
+            Poll::Pending
+        } else {
+            self.send(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+    }
+
+    fn alive(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
+    }
+
+    fn lock(&self) -> Lock<'_> {
+        let backoff = Backoff::new();
+        while self.lock.compare_and_swap(0, 1, Ordering::Acquire) != 0 {
+            backoff.snooze();
+        }
+        Lock { inner: self }
+    }
+
+    fn unlock(&self) {
+        self.lock.store(0, Ordering::SeqCst);
+    }
+
+    fn recv(&self, buf: &mut [u8]) -> usize {
         let mut size = 0;
-        let una = self.una.load(Ordering::Relaxed);
+        let una = self.una.get();
         let recv_queue = unsafe { &mut *self.recv_queue.as_ptr() };
 
         while size < buf.len() && !recv_queue.is_empty() {
@@ -332,19 +408,49 @@ impl<'a> UcpStream<'a> {
         size
     }
 
-    async fn update(&self) -> bool {
-        let mut alive = self.check_if_alive();
+    fn send(&self, buf: &[u8]) {
+        let mut pos = 0;
+        let send_buffer = unsafe { &mut *self.send_buffer.as_ptr() };
 
-        if alive {
-            self.do_heartbeat().await;
-            self.send_ack_list().await;
-            self.timeout_resend().await;
-            self.send_pending_packets().await;
-            let on_update = self.on_update.clone();
-            alive = (on_update.borrow_mut().as_mut().unwrap())(self);
+        if let Some(packet) = send_buffer.back_mut() {
+            let remain = min(packet.remaining_load(), buf.len());
+            if remain > 0 {
+                packet.payload_write_slice(&buf[0..remain]);
+            }
+
+            pos = remain;
         }
 
-        alive
+        if pos < buf.len() {
+            self.make_packet_send(&buf[pos..]);
+        }
+    }
+
+    fn try_wake_reader(&self) {
+        let recv_queue = unsafe { &*self.recv_queue.as_ptr() };
+
+        if let Some(packet) = recv_queue.front() {
+            let diff = (packet.seq - self.una.get()) as i32;
+            if diff < 0 {
+                if let Some(w) = self.read_waker.take() {
+                    w.wake();
+                }
+            }
+        }
+    }
+
+    fn try_wake_writer(&self) {
+        if !self.is_send_buffer_overflow() {
+            if let Some(w) = self.write_waker.take() {
+                w.wake();
+            }
+        }
+    }
+
+    fn is_send_buffer_overflow(&self) -> bool {
+        let remote_window = self.remote_window.get();
+        let send_buffer = unsafe { &mut *self.send_buffer.as_ptr() };
+        send_buffer.len() >= remote_window as usize
     }
 
     fn check_if_alive(&self) -> bool {
@@ -353,8 +459,7 @@ impl<'a> UcpStream<'a> {
         let alive = interval < UCP_STREAM_BROKEN_MILLIS;
 
         if !alive {
-            let on_broken = self.on_broken.clone();
-            (on_broken.borrow_mut().as_mut().unwrap())(self);
+            self.alive.store(false, Ordering::Relaxed);
             error!("ucp alive timeout, remote address: {}, session: {}",
                    self.remote_addr, self.session_id.get());
         }
@@ -396,72 +501,72 @@ impl<'a> UcpStream<'a> {
 
     async fn timeout_resend(&self) {
         let now = self.timestamp();
-        let una = self.una.load(Ordering::Relaxed);
-        let rto = self.rto.load(Ordering::Relaxed);
-        let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
+        let una = self.una.get();
+        let rto = self.rto.get();
+        let mut resend = Vec::new();
 
-        for packet in send_queue.iter_mut() {
-            let interval = now - packet.timestamp;
-            let skip_resend = packet.skip_times >= SKIP_RESEND_TIMES;
+        {
+            let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
 
-            if interval >= rto || skip_resend {
-                packet.skip_times = 0;
-                packet.window = self.local_window.get();
-                packet.una = una;
-                packet.timestamp = now;
-                packet.xmit += 1;
+            for packet in send_queue.iter_mut() {
+                let interval = now - packet.timestamp;
+                let skip_resend = packet.skip_times >= SKIP_RESEND_TIMES;
 
-                self.send_packet_directly(packet).await;
+                if interval >= rto || skip_resend {
+                    packet.skip_times = 0;
+                    packet.window = self.local_window.get();
+                    packet.una = una;
+                    packet.timestamp = now;
+                    packet.xmit += 1;
+
+                    resend.push(packet.clone());
+                }
             }
+        }
+
+        for packet in resend.iter_mut() {
+            self.send_packet_directly(packet).await;
         }
     }
 
     async fn send_pending_packets(&self) {
         let now = self.timestamp();
-        let una = self.una.load(Ordering::Relaxed);
-        let window = self.remote_window.load(Ordering::Relaxed) as usize;
-        let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
-        let send_buffer = unsafe { &mut *self.send_buffer.as_ptr() };
+        let una = self.una.get();
+        let window = self.remote_window.get() as usize;
+        let mut pending = Vec::new();
 
-        while send_queue.len() < window {
-            if let Some(q) = send_queue.front() {
-                if let Some(p) = send_buffer.front() {
-                    let seq_diff = (p.seq - q.seq) as usize;
-                    if seq_diff >= window {
-                        break
+        {
+            let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
+            let send_buffer = unsafe { &mut *self.send_buffer.as_ptr() };
+
+            while send_queue.len() < window {
+                if let Some(q) = send_queue.front() {
+                    if let Some(p) = send_buffer.front() {
+                        let seq_diff = (p.seq - q.seq) as usize;
+                        if seq_diff >= window {
+                            break
+                        }
                     }
                 }
-            }
 
-            if let Some(mut packet) = send_buffer.pop_front() {
-                packet.window = self.local_window.get();
-                packet.una = una;
-                packet.timestamp = now;
+                if let Some(mut packet) = send_buffer.pop_front() {
+                    packet.window = self.local_window.get();
+                    packet.una = una;
+                    packet.timestamp = now;
 
-                self.send_packet_directly(&mut packet).await;
-                send_queue.push_back(packet);
-            } else {
-                break
-            }
-        }
-    }
-
-    async fn process_packet(&self, packet: Box<UcpPacket>,
-                            remote_addr: SocketAddr) {
-        if self.remote_addr != remote_addr {
-            error!("unexpect packet from {}, expect from {}",
-                   remote_addr, self.remote_addr);
-            return
-        }
-
-        match self.state.get() {
-            UcpState::NONE => if packet.is_syn() {
-                self.accepting(packet);
-            },
-            _ => {
-                self.processing(packet).await;
+                    pending.push(packet.clone());
+                    send_queue.push_back(packet);
+                } else {
+                    break
+                }
             }
         }
+
+        for packet in pending.iter_mut() {
+            self.send_packet_directly(packet).await;
+        }
+
+        self.try_wake_writer();
     }
 
     fn connecting(&self) {
@@ -477,8 +582,8 @@ impl<'a> UcpStream<'a> {
     fn accepting(&self, packet: Box<UcpPacket>) {
         self.state.set(UcpState::ACCEPTING);
         self.session_id.set(packet.session_id);
-        self.una.store(packet.seq + 1, Ordering::Relaxed);
-        self.remote_window.store(packet.window, Ordering::Relaxed);
+        self.una.set(packet.seq + 1);
+        self.remote_window.set(packet.window);
 
         let mut syn_ack = self.new_packet(CMD_SYN_ACK);
         syn_ack.payload_write_u32(packet.seq);
@@ -496,11 +601,12 @@ impl<'a> UcpStream<'a> {
         }
 
         self.alive_time.set(get_time());
-        self.remote_window.store(packet.window, Ordering::Relaxed);
+        self.remote_window.set(packet.window);
 
-        match self.state.get() {
+        let state = self.state.get();
+        match state {
             UcpState::ACCEPTING => {
-                self.process_state_accepting(packet).await;
+                self.process_state_accepting(packet);
             },
             UcpState::CONNECTING => {
                 self.process_state_connecting(packet).await;
@@ -512,7 +618,7 @@ impl<'a> UcpStream<'a> {
         }
     }
 
-    async fn process_state_accepting(&self, mut packet: Box<UcpPacket>) {
+    fn process_state_accepting(&self, mut packet: Box<UcpPacket>) {
         if packet.cmd == CMD_ACK && packet.payload == 8 {
             let seq = packet.payload_read_u32();
             let timestamp = packet.payload_read_u32();
@@ -580,7 +686,7 @@ impl<'a> UcpStream<'a> {
     fn process_data(&self, packet: Box<UcpPacket>) {
         let ack_list = unsafe { &mut *self.ack_list.as_ptr() };
         ack_list.push((packet.seq, packet.timestamp));
-        let una = self.una.load(Ordering::Relaxed);
+        let una = self.una.get();
 
         let una_diff = (packet.seq - una) as i32;
         if una_diff < 0 {
@@ -604,12 +710,15 @@ impl<'a> UcpStream<'a> {
         recv_queue.insert(pos, packet);
 
         for i in pos..recv_queue.len() {
-            if recv_queue[i].seq == self.una.load(Ordering::Relaxed) {
-                self.una.fetch_add(1, Ordering::Relaxed);
+            let una = self.una.get();
+            if recv_queue[i].seq == una {
+                self.una.set(una + 1);
             } else {
                 break
             }
         }
+
+        self.try_wake_reader();
     }
 
     async fn process_syn_ack(&self, mut packet: Box<UcpPacket>) {
@@ -626,7 +735,7 @@ impl<'a> UcpStream<'a> {
                 UcpState::CONNECTING => {
                     if self.process_an_ack(seq, timestamp) {
                         self.state.set(UcpState::ESTABLISHED);
-                        self.una.store(packet.seq + 1, Ordering::Relaxed);
+                        self.una.set(packet.seq + 1);
                         info!("{} established, session: {}",
                               self.remote_addr, self.session_id.get());
                     }
@@ -647,8 +756,8 @@ impl<'a> UcpStream<'a> {
 
     fn process_an_ack(&self, seq: u32, timestamp: u32) -> bool {
         let rtt = self.timestamp() - timestamp;
-        let rto = self.rto.load(Ordering::Relaxed);
-        self.rto.store((rto + rtt) / 2, Ordering::Relaxed);
+        let rto = self.rto.get();
+        self.rto.set((rto + rtt) / 2);
 
         let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
         for i in 0..send_queue.len() {
@@ -672,7 +781,7 @@ impl<'a> UcpStream<'a> {
         packet.timestamp = self.timestamp();
         packet.window = self.local_window.get();
         packet.seq = self.next_seq();
-        packet.una = self.una.load(Ordering::Relaxed);
+        packet.una = self.una.get();
         packet.cmd = cmd;
 
         packet
@@ -684,7 +793,7 @@ impl<'a> UcpStream<'a> {
         packet.session_id = self.session_id.get();
         packet.timestamp = self.timestamp();
         packet.window = self.local_window.get();
-        packet.una = self.una.load(Ordering::Relaxed);
+        packet.una = self.una.get();
         packet.cmd = cmd;
 
         packet
@@ -695,7 +804,9 @@ impl<'a> UcpStream<'a> {
     }
 
     fn next_seq(&self) -> u32 {
-        self.seq.fetch_add(1, Ordering::Relaxed) + 1
+        let seq = unsafe { &mut *self.seq.as_ptr() };
+        *seq += 1;
+        *seq
     }
 
     fn make_packet_send(&self, buf: &[u8]) {
@@ -725,73 +836,102 @@ impl<'a> UcpStream<'a> {
     }
 }
 
-/*
-pub struct UcpClient {
-    socket: UdpSocket,
-    ucp: UcpStream,
-    update_time: Timespec
+pub struct UcpStream {
+    inner: Arc<InnerStream>
 }
 
-impl UcpClient {
-    pub fn connect(server_addr: &str) -> UcpClient {
-        let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
+impl UcpStream {
+    pub async fn connect(server_addr: &str) -> Self {
+        let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
         let remote_addr = SocketAddr::from_str(server_addr).unwrap();
 
-        let socket2 = socket.try_clone().unwrap();
-        let ucp = UcpStream::new(socket2, remote_addr);
-        ucp.connecting();
+        let inner = Arc::new(InnerStream::new(socket, remote_addr));
+        inner.connecting();
 
-        socket.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
-        UcpClient { socket: socket, ucp: ucp, update_time: get_time() }
+        let sender = inner.clone();
+        task::spawn(async move {
+            UcpStream::send(sender).await;
+        });
+
+        let receiver = inner.clone();
+        task::spawn(async move {
+            UcpStream::recv(receiver).await;
+        });
+
+        UcpStream { inner: inner }
     }
 
-    pub fn set_on_update<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut(&UcpStream) -> bool {
-        self.ucp.set_on_update(cb);
-    }
-
-    pub fn set_on_broken<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut(&UcpStream) {
-        self.ucp.set_on_broken(cb);
-    }
-
-    pub fn run(&mut self) {
+    async fn send(inner: Arc<InnerStream>) {
         loop {
-            let mut packet = Box::new(UcpPacket::new());
-            let result = self.socket.recv_from(&mut packet.buf);
+            task::sleep(Duration::from_millis(10)).await;
+            inner.output().await;
 
-            if let Ok((size, remote_addr)) = result {
-                packet.size = size;
-                self.process_packet(packet, remote_addr);
-            }
-
-            if !self.update() {
+            if !inner.alive() {
                 break
             }
         }
     }
 
-    fn update(&mut self) -> bool {
-        let now = get_time();
-        if (now - self.update_time).num_milliseconds() < 10 {
-            return true
+    async fn recv(inner: Arc<InnerStream>) {
+        loop {
+            let mut packet = Box::new(UcpPacket::new());
+            let result = io::timeout(
+                Duration::from_secs(15),
+                inner.socket.recv_from(&mut packet.buf))
+                .await;
+
+            if !inner.alive() {
+                break
+            }
+
+            if let Ok((size, remote_addr)) = result {
+                packet.size = size;
+
+                if packet.parse() {
+                    inner.input(packet, remote_addr).await;
+                } else {
+                    error!("recv illgal packet from {}", remote_addr);
+                }
+            }
         }
-
-        self.update_time = now;
-        self.ucp.update()
-    }
-
-    fn process_packet(&mut self, mut packet: Box<UcpPacket>,
-                      remote_addr: SocketAddr) {
-        if !packet.parse() {
-            error!("recv illgal packet from {}", remote_addr);
-            return
-        }
-
-        self.ucp.process_packet(packet, remote_addr);
     }
 }
 
+impl Read for &UcpStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context,
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.inner.poll_read(cx, buf)
+    }
+}
+
+impl Write for &UcpStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.inner.poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        _cx: &mut Context,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(
+        self: Pin<&mut Self>,
+        _cx: &mut Context,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+/*
 type UcpStreamMap = HashMap<SocketAddr, Rc<RefCell<UcpStream>>>;
 
 pub struct UcpServer {
