@@ -325,12 +325,7 @@ impl InnerStream {
             self.timeout_resend().await;
             self.send_pending_packets().await;
         } else {
-            if let Some(w) = self.read_waker.take() {
-                w.wake()
-            }
-            if let Some(w) = self.write_waker.take() {
-                w.wake()
-            }
+            self.die();
         }
     }
 
@@ -366,8 +361,25 @@ impl InnerStream {
         }
     }
 
+    fn shutdown(&self) {
+        let _l = self.lock();
+        self.die();
+    }
+
     fn alive(&self) -> bool {
         self.alive.load(Ordering::Relaxed)
+    }
+
+    fn die(&self) {
+        self.alive.store(false, Ordering::Relaxed);
+
+        if let Some(w) = self.read_waker.take() {
+            w.wake()
+        }
+
+        if let Some(w) = self.write_waker.take() {
+            w.wake()
+        }
     }
 
     fn lock(&self) -> Lock<'_> {
@@ -459,7 +471,6 @@ impl InnerStream {
         let alive = interval < UCP_STREAM_BROKEN_MILLIS;
 
         if !alive {
-            self.alive.store(false, Ordering::Relaxed);
             error!("ucp alive timeout, remote address: {}, session: {}",
                    self.remote_addr, self.session_id.get());
         }
@@ -859,6 +870,10 @@ impl UcpStream {
         });
 
         UcpStream { inner: inner }
+    }
+
+    pub fn shutdown(&self) {
+        self.inner.shutdown();
     }
 
     async fn send(inner: Arc<InnerStream>) {
