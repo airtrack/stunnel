@@ -1,6 +1,6 @@
+use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::future::Future;
 use std::time::{Duration, Instant};
 
 use async_std::stream::Stream;

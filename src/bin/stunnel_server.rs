@@ -1,17 +1,17 @@
 #[macro_use]
 extern crate log;
+extern crate async_std;
 extern crate getopts;
 extern crate stunnel;
-extern crate async_std;
 
 use std::env;
 
-use async_std::prelude::*;
 use async_std::net::TcpListener;
+use async_std::prelude::*;
 use async_std::task;
 
-use stunnel::logger;
 use stunnel::cryptor::Cryptor;
+use stunnel::logger;
 use stunnel::server::*;
 use stunnel::ucp::UcpListener;
 
@@ -26,10 +26,10 @@ fn main() {
     opts.optflag("", "enable-ucp", "enable ucp");
 
     let matches = match opts.parse(&args[1..]) {
-        Ok(m) => { m }
+        Ok(m) => m,
         Err(_) => {
             println!("{}", opts.short_usage(&program));
-            return
+            return;
         }
     };
 
@@ -41,7 +41,7 @@ fn main() {
 
     if key.len() < min || key.len() > max {
         println!("key length must in range [{}, {}]", min, max);
-        return
+        return;
     }
 
     logger::init(log::Level::Info, log_path, 1, 2000000).unwrap();
@@ -68,7 +68,7 @@ fn main() {
             match stream {
                 Ok(stream) => {
                     TcpTunnel::new(key.clone(), stream);
-                },
+                }
 
                 Err(_) => {}
             }

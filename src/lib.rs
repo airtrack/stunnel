@@ -1,26 +1,25 @@
 #[macro_use]
 extern crate log;
-extern crate crc;
-extern crate crypto;
-extern crate time;
-extern crate rand;
 extern crate async_std;
-extern crate futures_timer;
+extern crate crc;
 extern crate crossbeam_utils;
+extern crate crypto;
+extern crate futures_timer;
+extern crate rand;
+extern crate time;
 
-pub mod logger;
-pub mod ucp;
-pub mod timer;
 pub mod client;
+pub mod cryptor;
+pub mod logger;
 pub mod server;
 pub mod socks5;
-pub mod cryptor;
+pub mod timer;
+pub mod ucp;
 
 mod protocol {
     use std::vec::Vec;
 
-    pub const VERIFY_DATA: [u8; 8] =
-        [0xF0u8, 0xEF, 0xE, 0x2, 0xAE, 0xBC, 0x8C, 0x78];
+    pub const VERIFY_DATA: [u8; 8] = [0xF0u8, 0xEF, 0xE, 0x2, 0xAE, 0xBC, 0x8C, 0x78];
     pub const HEARTBEAT_INTERVAL_MS: i64 = 5000;
     pub const ALIVE_TIMEOUT_TIME_MS: i64 = 60000;
 
@@ -53,7 +52,9 @@ mod protocol {
     fn pack_cmd_id_msg(cmd: u8, id: u32) -> [u8; 5] {
         let mut buf = [0u8; 5];
         buf[0] = cmd;
-        unsafe { *(buf.as_ptr().offset(1) as *mut u32) = id.to_be(); }
+        unsafe {
+            *(buf.as_ptr().offset(1) as *mut u32) = id.to_be();
+        }
         buf
     }
 
@@ -75,8 +76,7 @@ mod protocol {
         pack_cmd_id_data_msg(cs::CONNECT, id, data)
     }
 
-    pub fn pack_cs_connect_domain_msg(
-        id: u32, domain: &[u8], port: u16) -> Vec<u8> {
+    pub fn pack_cs_connect_domain_msg(id: u32, domain: &[u8], port: u16) -> Vec<u8> {
         let buf_len = 11 + domain.len();
         let mut buf = vec![0; buf_len];
         let len = domain.len() as u32 + 2;

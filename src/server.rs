@@ -1,20 +1,20 @@
 use std::collections::HashMap;
-use std::str::from_utf8;
-use std::vec::Vec;
 use std::net::Shutdown;
+use std::str::from_utf8;
 use std::time::Duration;
+use std::vec::Vec;
 
-use async_std::prelude::*;
 use async_std::io::{Read, Write};
-use async_std::sync::{Sender, Receiver, channel};
 use async_std::net::TcpStream;
+use async_std::prelude::*;
+use async_std::sync::{channel, Receiver, Sender};
 use async_std::task;
 
-use time::{get_time, Timespec};
-use super::ucp::UcpStream;
-use super::timer;
 use super::cryptor::*;
 use super::protocol::*;
+use super::timer;
+use super::ucp::UcpStream;
+use time::{get_time, Timespec};
 
 #[derive(Clone)]
 enum TunnelMsg {
@@ -105,7 +105,7 @@ impl TunnelReadPort {
     async fn read(&self) -> TunnelPortMsg {
         match self.rx.recv().await {
             Some(msg) => msg,
-            None => TunnelPortMsg::ClosePort
+            None => TunnelPortMsg::ClosePort,
         }
     }
 
@@ -121,18 +121,18 @@ async fn tunnel_port_write(stream: &mut &TcpStream, write_port: &TunnelWritePort
             Ok(0) => {
                 let _ = stream.shutdown(Shutdown::Read);
                 write_port.shutdown_write().await;
-                break
-            },
+                break;
+            }
 
             Ok(n) => {
                 buf.truncate(n);
                 write_port.write(buf).await;
-            },
+            }
 
             Err(_) => {
                 let _ = stream.shutdown(Shutdown::Both);
                 write_port.close().await;
-                break
+                break;
             }
         }
     }
@@ -144,18 +144,18 @@ async fn tunnel_port_read(stream: &mut &TcpStream, read_port: &TunnelReadPort) {
             TunnelPortMsg::Data(cs::DATA, buf) => {
                 if stream.write_all(&buf).await.is_err() {
                     let _ = stream.shutdown(Shutdown::Both);
-                    break
+                    break;
                 }
-            },
+            }
 
             TunnelPortMsg::ShutdownWrite => {
                 let _ = stream.shutdown(Shutdown::Write);
-                break
-            },
+                break;
+            }
 
             _ => {
                 let _ = stream.shutdown(Shutdown::Both);
-                break
+                break;
             }
         }
     }
@@ -165,18 +165,20 @@ async fn tunnel_port_task(read_port: TunnelReadPort, write_port: TunnelWritePort
     let stream = match read_port.read().await {
         TunnelPortMsg::Data(cs::CONNECT, buf) => {
             TcpStream::connect(from_utf8(&buf).unwrap()).await.ok()
-        },
+        }
 
         TunnelPortMsg::ConnectDN(domain_name, port) => {
-            TcpStream::connect((from_utf8(&domain_name).unwrap(), port)).await.ok()
-        },
+            TcpStream::connect((from_utf8(&domain_name).unwrap(), port))
+                .await
+                .ok()
+        }
 
-        _ => None
+        _ => None,
     };
 
     let stream = match stream {
         Some(s) => s,
-        None => return write_port.close().await
+        None => return write_port.close().await,
     };
 
     match stream.local_addr() {
@@ -184,7 +186,7 @@ async fn tunnel_port_task(read_port: TunnelReadPort, write_port: TunnelWritePort
             let mut buf = Vec::new();
             let _ = std::io::Write::write_fmt(&mut buf, format_args!("{}", addr));
             write_port.connect_ok(buf).await;
-        },
+        }
 
         Err(_) => {
             return write_port.close().await;
@@ -211,8 +213,8 @@ async fn tcp_tunnel_core_task(key: Vec<u8>, stream: TcpStream) {
         let _ = stream.shutdown(Shutdown::Both);
     };
     let w = async {
-        let _ = process_tunnel_write(key.clone(), core_tx.clone(), core_rx,
-                                     &mut port_map, writer).await;
+        let _ = process_tunnel_write(key.clone(), core_tx.clone(), core_rx, &mut port_map, writer)
+            .await;
         let _ = stream.shutdown(Shutdown::Both);
     };
     let _ = r.join(w).await;
@@ -233,8 +235,8 @@ async fn ucp_tunnel_core_task(key: Vec<u8>, stream: UcpStream) {
         stream.shutdown();
     };
     let w = async {
-        let _ = process_tunnel_write(key.clone(), core_tx.clone(), core_rx,
-                                     &mut port_map, writer).await;
+        let _ = process_tunnel_write(key.clone(), core_tx.clone(), core_rx, &mut port_map, writer)
+            .await;
         stream.shutdown();
     };
     let _ = r.join(w).await;
@@ -269,7 +271,7 @@ async fn process_tunnel_read<R: Read + Unpin>(
 
         if op == cs::HEARTBEAT {
             core_tx.send(TunnelMsg::CSHeartbeat).await;
-            continue
+            continue;
         }
 
         let mut id = [0u8; 4];
@@ -279,15 +281,15 @@ async fn process_tunnel_read<R: Read + Unpin>(
         match op {
             cs::OPEN_PORT => {
                 core_tx.send(TunnelMsg::CSOpenPort(id)).await;
-            },
+            }
 
             cs::CLOSE_PORT => {
                 core_tx.send(TunnelMsg::CSClosePort(id)).await;
-            },
+            }
 
             cs::SHUTDOWN_WRITE => {
                 core_tx.send(TunnelMsg::CSShutdownWrite(id)).await;
-            },
+            }
 
             cs::CONNECT_DOMAIN_NAME => {
                 let mut len = [0u8; 4];
@@ -301,8 +303,10 @@ async fn process_tunnel_read<R: Read + Unpin>(
                 let domain_name = decryptor.decrypt(&buf[0..pos]);
                 let port = u16::from_be(unsafe { *(buf[pos..].as_ptr() as *const u16) });
 
-                core_tx.send(TunnelMsg::CSConnectDN(id, domain_name, port)).await;
-            },
+                core_tx
+                    .send(TunnelMsg::CSConnectDN(id, domain_name, port))
+                    .await;
+            }
 
             _ => {
                 let mut len = [0u8; 4];
@@ -340,23 +344,25 @@ async fn process_tunnel_write<W: Write + Unpin>(
             Some(TunnelMsg::Heartbeat) => {
                 let duration = get_time() - alive_time;
                 if duration.num_milliseconds() > ALIVE_TIMEOUT_TIME_MS {
-                    break
+                    break;
                 }
-            },
+            }
 
-            Some(TunnelMsg::CloseTunnel) => {
-                break
-            },
+            Some(TunnelMsg::CloseTunnel) => break,
 
             Some(msg) => {
                 process_tunnel_msg(
-                    msg, &core_tx, &mut alive_time,
-                    port_map, &mut encryptor, stream).await?;
-            },
-
-            None => {
-                break
+                    msg,
+                    &core_tx,
+                    &mut alive_time,
+                    port_map,
+                    &mut encryptor,
+                    stream,
+                )
+                .await?;
             }
+
+            None => break,
         }
     }
 
@@ -369,13 +375,13 @@ async fn process_tunnel_msg<W: Write + Unpin>(
     alive_time: &mut Timespec,
     port_map: &mut PortMap,
     encryptor: &mut Cryptor,
-    stream: &mut W
+    stream: &mut W,
 ) -> std::io::Result<()> {
     match msg {
         TunnelMsg::CSHeartbeat => {
             *alive_time = get_time();
             stream.write_all(&pack_sc_heartbeat_rsp_msg()).await?;
-        },
+        }
 
         TunnelMsg::CSOpenPort(id) => {
             *alive_time = get_time();
@@ -383,17 +389,20 @@ async fn process_tunnel_msg<W: Write + Unpin>(
             port_map.insert(id, PortMapValue { count: 2, tx: tx });
 
             let read_port = TunnelReadPort {
-                id: id, tx: core_tx.clone(), rx: rx
+                id: id,
+                tx: core_tx.clone(),
+                rx: rx,
             };
 
             let write_port = TunnelWritePort {
-                id: id, tx: core_tx.clone()
+                id: id,
+                tx: core_tx.clone(),
             };
 
             task::spawn(async move {
                 tunnel_port_task(read_port, write_port).await;
             });
-        },
+        }
 
         TunnelMsg::CSClosePort(id) => {
             *alive_time = get_time();
@@ -403,7 +412,7 @@ async fn process_tunnel_msg<W: Write + Unpin>(
             };
 
             port_map.remove(&id);
-        },
+        }
 
         TunnelMsg::CSShutdownWrite(id) => {
             *alive_time = get_time();
@@ -417,9 +426,12 @@ async fn process_tunnel_msg<W: Write + Unpin>(
             *alive_time = get_time();
 
             if let Some(value) = port_map.get(&id) {
-                value.tx.send(TunnelPortMsg::ConnectDN(domain_name, port)).await;
+                value
+                    .tx
+                    .send(TunnelPortMsg::ConnectDN(domain_name, port))
+                    .await;
             };
-        },
+        }
 
         TunnelMsg::CSData(op, id, buf) => {
             *alive_time = get_time();
@@ -427,7 +439,7 @@ async fn process_tunnel_msg<W: Write + Unpin>(
             if let Some(value) = port_map.get(&id) {
                 value.tx.send(TunnelPortMsg::Data(op, buf)).await;
             };
-        },
+        }
 
         TunnelMsg::SCClosePort(id) => {
             if let Some(value) = port_map.get(&id) {
@@ -436,21 +448,21 @@ async fn process_tunnel_msg<W: Write + Unpin>(
             };
 
             port_map.remove(&id);
-        },
+        }
 
         TunnelMsg::SCShutdownWrite(id) => {
             stream.write_all(&pack_sc_shutdown_write_msg(id)).await?;
-        },
+        }
 
         TunnelMsg::SCConnectOk(id, buf) => {
             let data = encryptor.encrypt(&buf);
             stream.write_all(&pack_sc_connect_ok_msg(id, &data)).await?;
-        },
+        }
 
         TunnelMsg::SCData(id, buf) => {
             let data = encryptor.encrypt(&buf);
             stream.write_all(&pack_sc_data_msg(id, &data)).await?;
-        },
+        }
 
         TunnelMsg::TunnelPortDrop(id) => {
             if let Some(value) = port_map.get_mut(&id) {
@@ -459,7 +471,7 @@ async fn process_tunnel_msg<W: Write + Unpin>(
                     port_map.remove(&id);
                 }
             };
-        },
+        }
 
         _ => {}
     }

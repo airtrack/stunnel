@@ -1,6 +1,6 @@
-use std::net::{Ipv4Addr, SocketAddrV4, SocketAddr};
-use async_std::prelude::*;
 use async_std::net::TcpStream;
+use async_std::prelude::*;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
 const VER: u8 = 5;
 const RSV: u8 = 0;
@@ -55,10 +55,10 @@ pub async fn handshake(stream: &mut TcpStream) -> std::io::Result<Destination> {
 
             let port = unsafe { *(ipv4_addr.as_ptr().offset(4) as *const u16) };
             Destination::Address(SocketAddr::V4(SocketAddrV4::new(
-                Ipv4Addr::new(ipv4_addr[3], ipv4_addr[2],
-                ipv4_addr[1], ipv4_addr[0]),
-                u16::from_be(port))))
-        },
+                Ipv4Addr::new(ipv4_addr[3], ipv4_addr[2], ipv4_addr[1], ipv4_addr[0]),
+                u16::from_be(port),
+            )))
+        }
 
         ATYP_DOMAINNAME => {
             let mut len = [0u8; 1];
@@ -71,10 +71,10 @@ pub async fn handshake(stream: &mut TcpStream) -> std::io::Result<Destination> {
             let port = unsafe { *(buf.as_ptr().offset(len as isize) as *const u16) };
             buf.truncate(len);
             Destination::DomainName(buf, u16::from_be(port))
-        },
+        }
 
         ATYP_IPV6 => Destination::Unknown,
-        _ => Destination::Unknown
+        _ => Destination::Unknown,
     };
 
     Ok(destination)
@@ -85,7 +85,10 @@ pub async fn destination_unreached(stream: &mut TcpStream) -> std::io::Result<()
     destination_result(stream, dest, REP_FAILURE).await
 }
 
-pub async fn destination_connected(stream: &mut TcpStream, dest: SocketAddr) -> std::io::Result<()> {
+pub async fn destination_connected(
+    stream: &mut TcpStream,
+    dest: SocketAddr,
+) -> std::io::Result<()> {
     destination_result(stream, dest, REP_SUCCESS).await
 }
 
@@ -94,7 +97,11 @@ async fn choose_method(stream: &mut TcpStream, method: u8) -> std::io::Result<()
     stream.write_all(&buf).await
 }
 
-async fn destination_result(stream: &mut TcpStream, dest: SocketAddr, rsp: u8) -> std::io::Result<()> {
+async fn destination_result(
+    stream: &mut TcpStream,
+    dest: SocketAddr,
+    rsp: u8,
+) -> std::io::Result<()> {
     match dest {
         SocketAddr::V4(ipv4) => {
             let mut buf = [0u8; 10];
@@ -109,7 +116,7 @@ async fn destination_result(stream: &mut TcpStream, dest: SocketAddr, rsp: u8) -
             }
 
             stream.write_all(&buf).await?
-        },
+        }
 
         SocketAddr::V6(ipv6) => {
             let mut buf = [0u8; 22];

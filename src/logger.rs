@@ -1,16 +1,16 @@
-use std::vec::Vec;
-use std::collections::vec_deque::VecDeque;
-use std::sync::{Arc, Mutex, Condvar};
-use std::fs::{OpenOptions, remove_file, rename};
-use std::io::Write;
-use std::thread;
 use log;
-use log::{Record, Level, Metadata, SetLoggerError, LevelFilter};
+use log::{Level, LevelFilter, Metadata, Record, SetLoggerError};
+use std::collections::vec_deque::VecDeque;
+use std::fs::{remove_file, rename, OpenOptions};
+use std::io::Write;
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
+use std::vec::Vec;
 use time::{at, get_time, strftime};
 
 struct ChannelLogger {
     level: Level,
-    msg_queue: Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>
+    msg_queue: Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>,
 }
 
 impl log::Log for ChannelLogger {
@@ -25,10 +25,16 @@ impl log::Log for ChannelLogger {
             let date = strftime("%F %T", &now).unwrap();
             let microseconds = now.tm_nsec / 1000;
 
-            let _ = write!(&mut data, "[{}.{:06}][{}][{}:{}] - {}\n",
-                           date, microseconds, record.level(),
-                           record.file().unwrap(), record.line().unwrap(),
-                           record.args());
+            let _ = write!(
+                &mut data,
+                "[{}.{:06}][{}][{}:{}] - {}\n",
+                date,
+                microseconds,
+                record.level(),
+                record.file().unwrap(),
+                record.line().unwrap(),
+                record.args()
+            );
 
             let &(ref lock, ref cvar) = &*self.msg_queue;
             let mut queue = lock.lock().unwrap();
@@ -37,15 +43,21 @@ impl log::Log for ChannelLogger {
         }
     }
 
-    fn flush(&self) {
-    }
+    fn flush(&self) {}
 }
 
-fn log_thread_func(msg_queue: Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>,
-                   log_path: String, rotate_count: usize, rotate_size: usize) {
+fn log_thread_func(
+    msg_queue: Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>,
+    log_path: String,
+    rotate_count: usize,
+    rotate_size: usize,
+) {
     let mut size = 0;
-    let mut file = OpenOptions::new().create(true).
-        write(true).append(true).open(&log_path);
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(true)
+        .open(&log_path);
 
     loop {
         let &(ref lock, ref cvar) = &*msg_queue;
@@ -59,14 +71,17 @@ fn log_thread_func(msg_queue: Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>,
             Ok(ref mut f) => {
                 let _ = f.write_all(&data);
                 size += data.len();
-            },
-            Err(_) => { }
+            }
+            Err(_) => {}
         }
 
         if size > rotate_size && rotate_count > 0 {
             rotate_file(&log_path, rotate_count);
-            file = OpenOptions::new().create(true).
-                write(true).append(true).open(&log_path);
+            file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .append(true)
+                .open(&log_path);
             size = 0;
         }
     }
@@ -95,9 +110,12 @@ fn rotate_file(log_path: &String, rotate_count: usize) {
     }
 }
 
-pub fn init(level: Level, log_path: String,
-            rotate_count: usize,
-            rotate_size: usize) -> Result<(), SetLoggerError> {
+pub fn init(
+    level: Level,
+    log_path: String,
+    rotate_count: usize,
+    rotate_size: usize,
+) -> Result<(), SetLoggerError> {
     let sender = Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
     let receiver = sender.clone();
 
@@ -106,5 +124,8 @@ pub fn init(level: Level, log_path: String,
     });
 
     log::set_max_level(LevelFilter::Info);
-    log::set_boxed_logger(Box::new(ChannelLogger { level: level, msg_queue: sender }))
+    log::set_boxed_logger(Box::new(ChannelLogger {
+        level: level,
+        msg_queue: sender,
+    }))
 }

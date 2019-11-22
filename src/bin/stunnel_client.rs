@@ -1,24 +1,24 @@
 #[macro_use]
 extern crate log;
+extern crate async_std;
 extern crate getopts;
 extern crate stunnel;
-extern crate async_std;
 
 use std::env;
-use std::vec::Vec;
 use std::net::Shutdown;
 use std::net::ToSocketAddrs;
 use std::str::from_utf8;
+use std::vec::Vec;
 
-use async_std::prelude::*;
 use async_std::net::TcpListener;
 use async_std::net::TcpStream;
+use async_std::prelude::*;
 use async_std::task;
 
+use stunnel::client::*;
+use stunnel::cryptor::Cryptor;
 use stunnel::logger;
 use stunnel::socks5;
-use stunnel::cryptor::Cryptor;
-use stunnel::client::*;
 
 async fn process_read(stream: &mut &TcpStream, write_port: &TunnelWritePort) {
     loop {
@@ -27,18 +27,18 @@ async fn process_read(stream: &mut &TcpStream, write_port: &TunnelWritePort) {
             Ok(0) => {
                 let _ = stream.shutdown(Shutdown::Read);
                 write_port.shutdown_write().await;
-                break
-            },
+                break;
+            }
 
             Ok(n) => {
                 buf.truncate(n);
                 write_port.write(buf).await;
-            },
+            }
 
             Err(_) => {
                 let _ = stream.shutdown(Shutdown::Both);
                 write_port.close().await;
-                break
+                break;
             }
         }
     }
@@ -47,41 +47,41 @@ async fn process_read(stream: &mut &TcpStream, write_port: &TunnelWritePort) {
 async fn process_write(stream: &mut &TcpStream, read_port: &TunnelReadPort) {
     loop {
         let buf = match read_port.read().await {
-            TunnelPortMsg::Data(buf) => {
-                buf
-            },
+            TunnelPortMsg::Data(buf) => buf,
 
             TunnelPortMsg::ShutdownWrite => {
                 let _ = stream.shutdown(Shutdown::Write);
-                break
-            },
+                break;
+            }
 
             _ => {
                 let _ = stream.shutdown(Shutdown::Both);
-                break
+                break;
             }
         };
 
         if stream.write_all(&buf).await.is_err() {
             let _ = stream.shutdown(Shutdown::Both);
-            break
+            break;
         }
     }
 }
 
-async fn run_tunnel_port(mut stream: TcpStream,
-                         read_port: TunnelReadPort,
-                         write_port: TunnelWritePort) {
+async fn run_tunnel_port(
+    mut stream: TcpStream,
+    read_port: TunnelReadPort,
+    write_port: TunnelWritePort,
+) {
     match socks5::handshake(&mut stream).await {
         Ok(socks5::Destination::Address(addr)) => {
             let mut buf = Vec::new();
             let _ = std::io::Write::write_fmt(&mut buf, format_args!("{}", addr));
             write_port.connect(buf).await;
-        },
+        }
 
         Ok(socks5::Destination::DomainName(domain_name, port)) => {
             write_port.connect_domain_name(domain_name, port).await;
-        },
+        }
 
         _ => {
             return write_port.close().await;
@@ -89,16 +89,16 @@ async fn run_tunnel_port(mut stream: TcpStream,
     }
 
     let addr = match read_port.read().await {
-        TunnelPortMsg::ConnectOk(buf) => {
-            from_utf8(&buf).unwrap().to_socket_addrs().unwrap().nth(0)
-        },
+        TunnelPortMsg::ConnectOk(buf) => from_utf8(&buf).unwrap().to_socket_addrs().unwrap().nth(0),
 
-        _ => None
+        _ => None,
     };
 
     let success = match addr {
-        Some(addr) => socks5::destination_connected(&mut stream, addr).await.is_ok(),
-        None => socks5::destination_unreached(&mut stream).await.is_ok() && false
+        Some(addr) => socks5::destination_connected(&mut stream, addr)
+            .await
+            .is_ok(),
+        None => socks5::destination_unreached(&mut stream).await.is_ok() && false,
     };
 
     if success {
@@ -114,8 +114,13 @@ async fn run_tunnel_port(mut stream: TcpStream,
     write_port.drop().await;
 }
 
-fn run_tunnels(listen_addr: String, server_addr: String,
-               count: u32, key: Vec<u8>, enable_ucp: bool) {
+fn run_tunnels(
+    listen_addr: String,
+    server_addr: String,
+    count: u32,
+    key: Vec<u8>,
+    enable_ucp: bool,
+) {
     task::block_on(async move {
         let mut tunnels = Vec::new();
         if enable_ucp {
@@ -144,7 +149,7 @@ fn run_tunnels(listen_addr: String, server_addr: String,
                     }
 
                     index = (index + 1) % tunnels.len();
-                },
+                }
 
                 Err(_) => {}
             }
@@ -165,10 +170,10 @@ fn main() {
     opts.optflag("", "enable-ucp", "enable ucp");
 
     let matches = match opts.parse(&args[1..]) {
-        Ok(m) => { m }
+        Ok(m) => m,
         Err(_) => {
             println!("{}", opts.short_usage(&program));
-            return
+            return;
         }
     };
 
@@ -177,21 +182,20 @@ fn main() {
     let key = matches.opt_str("k").unwrap().into_bytes();
     let log_path = matches.opt_str("log").unwrap_or(String::new());
     let enable_ucp = matches.opt_present("enable-ucp");
-    let listen_addr = matches.opt_str("l")
-        .unwrap_or("127.0.0.1:1080".to_string());
+    let listen_addr = matches.opt_str("l").unwrap_or("127.0.0.1:1080".to_string());
     let (min, max) = Cryptor::key_size_range();
 
     if key.len() < min || key.len() > max {
         println!("key length must in range [{}, {}]", min, max);
-        return
+        return;
     }
 
     let count: u32 = match tunnel_count.parse() {
         Err(_) | Ok(0) => {
             println!("tunnel-count must greater than 0");
-            return
-        },
-        Ok(count) => count
+            return;
+        }
+        Ok(count) => count,
     };
 
     logger::init(log::Level::Info, log_path, 1, 2000000).unwrap();

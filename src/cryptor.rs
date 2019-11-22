@@ -1,11 +1,9 @@
-use std::vec::Vec;
-use rand;
-use crypto::blowfish::Blowfish;
 use crypto::blockmodes::CtrMode;
-use crypto::symmetriccipher::{Encryptor, Decryptor};
-use crypto::buffer::{
-    RefReadBuffer, RefWriteBuffer, ReadBuffer, WriteBuffer, BufferResult
-};
+use crypto::blowfish::Blowfish;
+use crypto::buffer::{BufferResult, ReadBuffer, RefReadBuffer, RefWriteBuffer, WriteBuffer};
+use crypto::symmetriccipher::{Decryptor, Encryptor};
+use rand;
+use std::vec::Vec;
 
 pub const CTR_SIZE: usize = 8;
 
@@ -27,7 +25,10 @@ impl Cryptor {
     pub fn with_ctr(key: &[u8], ctr: Vec<u8>) -> Cryptor {
         let algo = Blowfish::new(key);
         let cryptor = CtrMode::new(algo, ctr.clone());
-        Cryptor { cryptor: cryptor, ctr: ctr }
+        Cryptor {
+            cryptor: cryptor,
+            ctr: ctr,
+        }
     }
 
     pub fn key_size_range() -> (usize, usize) {
@@ -49,10 +50,17 @@ impl Cryptor {
         let mut write_buffer = RefWriteBuffer::new(&mut buffer);
 
         loop {
-            let res = self.cryptor.encrypt(
-                &mut read_buffer, &mut write_buffer, false).unwrap();
-            result.extend(write_buffer.take_read_buffer().
-                          take_remaining().iter().map(|&i| i));
+            let res = self
+                .cryptor
+                .encrypt(&mut read_buffer, &mut write_buffer, false)
+                .unwrap();
+            result.extend(
+                write_buffer
+                    .take_read_buffer()
+                    .take_remaining()
+                    .iter()
+                    .map(|&i| i),
+            );
 
             match res {
                 BufferResult::BufferUnderflow => break,
@@ -70,10 +78,17 @@ impl Cryptor {
         let mut write_buffer = RefWriteBuffer::new(&mut buffer);
 
         loop {
-            let res = self.cryptor.decrypt(
-                &mut read_buffer, &mut write_buffer, false).unwrap();
-            result.extend(write_buffer.take_read_buffer().
-                          take_remaining().iter().map(|&i| i));
+            let res = self
+                .cryptor
+                .decrypt(&mut read_buffer, &mut write_buffer, false)
+                .unwrap();
+            result.extend(
+                write_buffer
+                    .take_read_buffer()
+                    .take_remaining()
+                    .iter()
+                    .map(|&i| i),
+            );
 
             match res {
                 BufferResult::BufferUnderflow => break,

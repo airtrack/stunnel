@@ -1,22 +1,22 @@
-use std::net::SocketAddr;
-use std::collections::{VecDeque, HashMap};
-use std::cell::Cell;
-use std::cmp::min;
-use std::io::{Error, ErrorKind};
-use std::pin::Pin;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Duration;
-use std::task::{Context, Poll, Waker};
-use std::vec::Vec;
 use async_std::io::{self, Read, Write};
 use async_std::net::UdpSocket;
 use async_std::task;
 use crc::crc32;
-use rand::random;
-use time::{Timespec, get_time};
 use crossbeam_utils::Backoff;
+use rand::random;
+use std::cell::Cell;
+use std::cmp::min;
+use std::collections::{HashMap, VecDeque};
+use std::io::{Error, ErrorKind};
+use std::net::SocketAddr;
+use std::pin::Pin;
+use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::task::{Context, Poll, Waker};
+use std::time::Duration;
+use std::vec::Vec;
+use time::{get_time, Timespec};
 
 const CMD_SYN: u8 = 128;
 const CMD_SYN_ACK: u8 = 129;
@@ -62,13 +62,13 @@ impl UcpPacket {
             xmit: 0,
             una: 0,
             seq: 0,
-            cmd: 0
+            cmd: 0,
         }
     }
 
     fn parse(&mut self) -> bool {
         if !self.is_legal() {
-            return false
+            return false;
         }
 
         self.payload = (self.size - UCP_PACKET_META_SIZE) as u16;
@@ -116,9 +116,7 @@ impl UcpPacket {
     }
 
     fn parse_u32(&self, offset: &mut isize) -> u32 {
-        let u = unsafe {
-            *(self.buf.as_ptr().offset(*offset) as *const u32)
-        };
+        let u = unsafe { *(self.buf.as_ptr().offset(*offset) as *const u32) };
 
         *offset += 4;
         u32::from_be(u)
@@ -132,8 +130,7 @@ impl UcpPacket {
 
     fn write_u32(&mut self, offset: &mut isize, u: u32) {
         unsafe {
-            *(self.buf.as_ptr().offset(*offset) as *mut u32)
-                = u.to_be();
+            *(self.buf.as_ptr().offset(*offset) as *mut u32) = u.to_be();
         }
 
         *offset += 4;
@@ -224,7 +221,7 @@ enum UcpState {
     NONE,
     ACCEPTING,
     CONNECTING,
-    ESTABLISHED
+    ESTABLISHED,
 }
 
 struct InnerStream {
@@ -257,7 +254,7 @@ unsafe impl Send for InnerStream {}
 unsafe impl Sync for InnerStream {}
 
 struct Lock<'a> {
-    inner: &'a InnerStream
+    inner: &'a InnerStream,
 }
 
 impl Drop for Lock<'_> {
@@ -298,18 +295,22 @@ impl InnerStream {
 
     async fn input(&self, packet: Box<UcpPacket>, remote_addr: SocketAddr) {
         if self.remote_addr != remote_addr {
-            error!("unexpect packet from {}, expect from {}",
-                   remote_addr, self.remote_addr);
-            return
+            error!(
+                "unexpect packet from {}, expect from {}",
+                remote_addr, self.remote_addr
+            );
+            return;
         }
 
         let _l = self.lock();
 
         let state = self.state.get();
         match state {
-            UcpState::NONE => if packet.is_syn() {
-                self.accepting(packet);
-            },
+            UcpState::NONE => {
+                if packet.is_syn() {
+                    self.accepting(packet);
+                }
+            }
             _ => {
                 self.processing(packet).await;
             }
@@ -403,14 +404,16 @@ impl InnerStream {
             if let Some(packet) = recv_queue.front_mut() {
                 let diff = (packet.seq - una) as i32;
                 if diff >= 0 {
-                    break
+                    break;
                 }
 
                 size += packet.payload_read_slice(&mut buf[size..]);
             }
 
-            let no_remain_payload = recv_queue.front().map(
-                |packet| packet.payload_remaining() == 0).unwrap();
+            let no_remain_payload = recv_queue
+                .front()
+                .map(|packet| packet.payload_remaining() == 0)
+                .unwrap();
 
             if no_remain_payload {
                 recv_queue.pop_front();
@@ -473,8 +476,11 @@ impl InnerStream {
         let alive = interval < UCP_STREAM_BROKEN_MILLIS;
 
         if !alive {
-            error!("ucp alive timeout, remote address: {}, session: {}",
-                   self.remote_addr, self.session_id.get());
+            error!(
+                "ucp alive timeout, remote address: {}, session: {}",
+                self.remote_addr,
+                self.session_id.get()
+            );
         }
 
         alive
@@ -494,7 +500,7 @@ impl InnerStream {
     async fn send_ack_list(&self) {
         let ack_list = self.ack_list.take();
         if ack_list.is_empty() {
-            return
+            return;
         }
 
         let mut packet = self.new_noseq_packet(CMD_ACK);
@@ -557,7 +563,7 @@ impl InnerStream {
                     if let Some(p) = send_buffer.front() {
                         let seq_diff = (p.seq - q.seq) as usize;
                         if seq_diff >= window {
-                            break
+                            break;
                         }
                     }
                 }
@@ -570,7 +576,7 @@ impl InnerStream {
                     pending.push(packet.clone());
                     send_queue.push_back(packet);
                 } else {
-                    break
+                    break;
                 }
             }
         }
@@ -588,8 +594,11 @@ impl InnerStream {
 
         let syn = self.new_packet(CMD_SYN);
         self.send_packet(syn);
-        info!("connecting ucp server {}, session: {}",
-              self.remote_addr, self.session_id.get());
+        info!(
+            "connecting ucp server {}, session: {}",
+            self.remote_addr,
+            self.session_id.get()
+        );
     }
 
     fn accepting(&self, packet: Box<UcpPacket>) {
@@ -602,15 +611,21 @@ impl InnerStream {
         syn_ack.payload_write_u32(packet.seq);
         syn_ack.payload_write_u32(packet.timestamp);
         self.send_packet(syn_ack);
-        info!("accepting ucp client {}, session: {}",
-              self.remote_addr, self.session_id.get());
+        info!(
+            "accepting ucp client {}, session: {}",
+            self.remote_addr,
+            self.session_id.get()
+        );
     }
 
     async fn processing(&self, packet: Box<UcpPacket>) {
         if self.session_id.get() != packet.session_id {
-            error!("unexpect session_id: {}, expect {}",
-                   packet.session_id, self.session_id.get());
-            return
+            error!(
+                "unexpect session_id: {}, expect {}",
+                packet.session_id,
+                self.session_id.get()
+            );
+            return;
         }
 
         self.alive_time.set(get_time());
@@ -620,13 +635,13 @@ impl InnerStream {
         match state {
             UcpState::ACCEPTING => {
                 self.process_state_accepting(packet);
-            },
+            }
             UcpState::CONNECTING => {
                 self.process_state_connecting(packet).await;
-            },
+            }
             UcpState::ESTABLISHED => {
                 self.process_state_established(packet).await;
-            },
+            }
             UcpState::NONE => {}
         }
     }
@@ -638,8 +653,11 @@ impl InnerStream {
 
             if self.process_an_ack(seq, timestamp) {
                 self.state.set(UcpState::ESTABLISHED);
-                info!("{} established, session: {}",
-                      self.remote_addr, self.session_id.get());
+                info!(
+                    "{} established, session: {}",
+                    self.remote_addr,
+                    self.session_id.get()
+                );
             }
         }
     }
@@ -654,16 +672,16 @@ impl InnerStream {
         match packet.cmd {
             CMD_ACK => {
                 self.process_ack(packet);
-            },
+            }
             CMD_DATA => {
                 self.process_data(packet);
-            },
+            }
             CMD_SYN_ACK => {
                 self.process_syn_ack(packet).await;
-            },
+            }
             CMD_HEARTBEAT => {
                 self.process_heartbeat().await;
-            },
+            }
             CMD_HEARTBEAT_ACK => {
                 self.process_heartbeat_ack();
             }
@@ -675,13 +693,15 @@ impl InnerStream {
         let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
 
         while !send_queue.is_empty() {
-            let diff = send_queue.front().map(
-                |packet| (packet.seq - una) as i32).unwrap();
+            let diff = send_queue
+                .front()
+                .map(|packet| (packet.seq - una) as i32)
+                .unwrap();
 
             if diff < 0 {
                 send_queue.pop_front();
             } else {
-                break
+                break;
             }
         }
     }
@@ -703,7 +723,7 @@ impl InnerStream {
 
         let una_diff = (packet.seq - una) as i32;
         if una_diff < 0 {
-            return
+            return;
         }
 
         let mut pos = 0;
@@ -712,9 +732,9 @@ impl InnerStream {
             let seq_diff = (packet.seq - recv_queue[i].seq) as i32;
 
             if seq_diff == 0 {
-                return
+                return;
             } else if seq_diff < 0 {
-                break
+                break;
             } else {
                 pos += 1;
             }
@@ -727,7 +747,7 @@ impl InnerStream {
             if recv_queue[i].seq == una {
                 self.una.set(una + 1);
             } else {
-                break
+                break;
             }
         }
 
@@ -749,10 +769,13 @@ impl InnerStream {
                     if self.process_an_ack(seq, timestamp) {
                         self.state.set(UcpState::ESTABLISHED);
                         self.una.set(packet.seq + 1);
-                        info!("{} established, session: {}",
-                              self.remote_addr, self.session_id.get());
+                        info!(
+                            "{} established, session: {}",
+                            self.remote_addr,
+                            self.session_id.get()
+                        );
                     }
-                },
+                }
                 _ => {}
             }
         }
@@ -776,7 +799,7 @@ impl InnerStream {
         for i in 0..send_queue.len() {
             if send_queue[i].seq == seq {
                 send_queue.remove(i);
-                return true
+                return true;
             } else {
                 if send_queue[i].timestamp <= timestamp {
                     send_queue[i].skip_times += 1;
@@ -845,12 +868,15 @@ impl InnerStream {
 
     async fn send_packet_directly(&self, packet: &mut Box<UcpPacket>) {
         packet.pack();
-        let _ = self.socket.send_to(packet.packed_buffer(), self.remote_addr).await;
+        let _ = self
+            .socket
+            .send_to(packet.packed_buffer(), self.remote_addr)
+            .await;
     }
 }
 
 pub struct UcpStream {
-    inner: Arc<InnerStream>
+    inner: Arc<InnerStream>,
 }
 
 impl UcpStream {
@@ -884,7 +910,7 @@ impl UcpStream {
             inner.output().await;
 
             if !inner.alive() {
-                break
+                break;
             }
         }
     }
@@ -894,11 +920,12 @@ impl UcpStream {
             let mut packet = Box::new(UcpPacket::new());
             let result = io::timeout(
                 Duration::from_secs(5),
-                inner.socket.recv_from(&mut packet.buf))
-                .await;
+                inner.socket.recv_from(&mut packet.buf),
+            )
+            .await;
 
             if !inner.alive() {
-                break
+                break;
             }
 
             if let Ok((size, remote_addr)) = result {
@@ -933,17 +960,11 @@ impl Write for &UcpStream {
         self.inner.poll_write(cx, buf)
     }
 
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        _cx: &mut Context,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<std::io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_close(
-        self: Pin<&mut Self>,
-        _cx: &mut Context,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<std::io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 }
@@ -953,7 +974,7 @@ type UcpStreamMap = HashMap<SocketAddr, Arc<InnerStream>>;
 pub struct UcpListener {
     socket: Arc<UdpSocket>,
     stream_map: UcpStreamMap,
-    timestamp: Timespec
+    timestamp: Timespec,
 }
 
 impl UcpListener {
@@ -962,7 +983,7 @@ impl UcpListener {
         UcpListener {
             socket: socket,
             stream_map: UcpStreamMap::new(),
-            timestamp: get_time()
+            timestamp: get_time(),
         }
     }
 
@@ -971,8 +992,9 @@ impl UcpListener {
             let mut packet = Box::new(UcpPacket::new());
             let result = io::timeout(
                 Duration::from_secs(1),
-                self.socket.recv_from(&mut packet.buf))
-                .await;
+                self.socket.recv_from(&mut packet.buf),
+            )
+            .await;
 
             if let Ok((size, remote_addr)) = result {
                 packet.size = size;
@@ -994,11 +1016,7 @@ impl UcpListener {
         }
     }
 
-    async fn new_stream(
-        &mut self,
-        packet: Box<UcpPacket>,
-        remote_addr: SocketAddr,
-    ) -> UcpStream {
+    async fn new_stream(&mut self, packet: Box<UcpPacket>, remote_addr: SocketAddr) -> UcpStream {
         info!("new ucp client from {}", remote_addr);
         let inner = Arc::new(InnerStream::new(self.socket.clone(), remote_addr));
         inner.input(packet, remote_addr).await;
@@ -1015,7 +1033,7 @@ impl UcpListener {
     fn remove_dead_stream(&mut self) {
         let now = get_time();
         if (now - self.timestamp).num_milliseconds() < 1000 {
-            return
+            return;
         }
 
         let mut keys = Vec::new();
