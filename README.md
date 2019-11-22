@@ -36,8 +36,3 @@ UCP
 ---
 
 UCP is an ARQ protocol implementation, which is base on UDP and inspired by [KCP](https://github.com/skywind3000/kcp).
-
-See also
---------
-
-C++ version of [stunnel](https://github.com/airtrack/snet/tree/master/test/stunnel).
