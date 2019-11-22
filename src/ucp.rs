@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::collections::{VecDeque};
+use std::collections::{VecDeque, HashMap};
 use std::cell::Cell;
 use std::cmp::min;
 use std::io::{Error, ErrorKind};
@@ -948,104 +948,88 @@ impl Write for &UcpStream {
     }
 }
 
-/*
-type UcpStreamMap = HashMap<SocketAddr, Rc<RefCell<UcpStream>>>;
+type UcpStreamMap = HashMap<SocketAddr, Arc<InnerStream>>;
 
-pub struct UcpServer {
-    socket: UdpSocket,
-    ucp_map: UcpStreamMap,
-    broken_ucp: Vec<SocketAddr>,
-    on_new_ucp: Option<Box<dyn FnMut(&mut UcpStream)>>,
-    update_time: Timespec
+pub struct UcpListener {
+    socket: Arc<UdpSocket>,
+    stream_map: UcpStreamMap,
+    timestamp: Timespec
 }
 
-impl UcpServer {
-    pub fn listen(listen_addr: &str) -> Result<UcpServer, Error> {
-        match UdpSocket::bind(listen_addr) {
-            Ok(socket) => {
-                socket.set_read_timeout(
-                    Some(Duration::from_millis(10))).unwrap();
-                Ok(UcpServer { socket: socket,
-                    ucp_map: UcpStreamMap::new(),
-                    broken_ucp: Vec::new(),
-                    on_new_ucp: None,
-                    update_time: get_time() })
-            },
-            Err(e) => Err(e)
+impl UcpListener {
+    pub async fn bind(listen_addr: &str) -> Self {
+        let socket = Arc::new(UdpSocket::bind(listen_addr).await.unwrap());
+        UcpListener {
+            socket: socket,
+            stream_map: UcpStreamMap::new(),
+            timestamp: get_time()
         }
     }
 
-    pub fn set_on_new_ucp_stream<CB>(&mut self, cb: CB)
-        where CB: 'static + FnMut(&mut UcpStream) {
-        self.on_new_ucp = Some(Box::new(cb));
-    }
-
-    pub fn run(&mut self) {
+    pub async fn incoming(&mut self) -> UcpStream {
         loop {
             let mut packet = Box::new(UcpPacket::new());
-            let result = self.socket.recv_from(&mut packet.buf);
+            let result = io::timeout(
+                Duration::from_secs(1),
+                self.socket.recv_from(&mut packet.buf))
+                .await;
 
             if let Ok((size, remote_addr)) = result {
                 packet.size = size;
-                self.process_packet(packet, remote_addr);
+
+                if packet.parse() {
+                    if let Some(inner) = self.stream_map.get(&remote_addr) {
+                        inner.input(packet, remote_addr).await;
+                    } else if packet.is_syn() {
+                        return self.new_stream(packet, remote_addr).await;
+                    } else {
+                        error!("unknown ucp session packet from {}", remote_addr);
+                    }
+                } else {
+                    error!("recv illgal packet from {}", remote_addr);
+                }
             }
 
-            self.update();
+            self.remove_dead_stream();
         }
     }
 
-    fn update(&mut self) {
+    async fn new_stream(
+        &mut self,
+        packet: Box<UcpPacket>,
+        remote_addr: SocketAddr,
+    ) -> UcpStream {
+        info!("new ucp client from {}", remote_addr);
+        let inner = Arc::new(InnerStream::new(self.socket.clone(), remote_addr));
+        inner.input(packet, remote_addr).await;
+
+        let sender = inner.clone();
+        task::spawn(async move {
+            UcpStream::send(sender).await;
+        });
+
+        self.stream_map.insert(remote_addr, inner.clone());
+        UcpStream { inner: inner }
+    }
+
+    fn remove_dead_stream(&mut self) {
         let now = get_time();
-        if (now - self.update_time).num_milliseconds() < 10 {
+        if (now - self.timestamp).num_milliseconds() < 1000 {
             return
         }
 
-        for (key, ucp) in self.ucp_map.iter() {
-            if !ucp.borrow_mut().update() {
-                self.broken_ucp.push(key.clone());
+        let mut keys = Vec::new();
+
+        for (addr, stream) in self.stream_map.iter() {
+            if !stream.alive() {
+                keys.push(addr.clone());
             }
         }
 
-        for key in self.broken_ucp.iter() {
-            self.ucp_map.remove(key);
+        for addr in keys.iter() {
+            self.stream_map.remove(addr);
         }
 
-        self.broken_ucp.clear();
-        self.update_time = now;
-    }
-
-    fn process_packet(&mut self, mut packet: Box<UcpPacket>,
-                      remote_addr: SocketAddr) {
-        if !packet.parse() {
-            error!("recv illgal packet from {}", remote_addr);
-            return
-        }
-
-        if let Some(ucp) = self.ucp_map.get_mut(&remote_addr) {
-            ucp.borrow_mut().process_packet(packet, remote_addr);
-            return
-        }
-
-        if packet.is_syn() {
-            info!("new ucp client from {}", remote_addr);
-            self.new_ucp_stream(packet, remote_addr);
-        } else {
-            error!("no session ucp packet from {}", remote_addr);
-        }
-    }
-
-    fn new_ucp_stream(&mut self, packet: Box<UcpPacket>,
-                      remote_addr: SocketAddr) {
-        let socket = self.socket.try_clone().unwrap();
-        let mut ucp = UcpStream::new(socket, remote_addr);
-
-        if let Some(ref mut on_new_ucp) = self.on_new_ucp {
-            on_new_ucp(&mut ucp);
-        }
-
-        let ucp_impl = Rc::new(RefCell::new(ucp));
-        let _ = self.ucp_map.insert(remote_addr, ucp_impl.clone());
-        ucp_impl.borrow_mut().process_packet(packet, remote_addr);
+        self.timestamp = now;
     }
 }
-*/

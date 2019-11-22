@@ -13,6 +13,7 @@ use async_std::task;
 use stunnel::logger;
 use stunnel::cryptor::Cryptor;
 use stunnel::server::*;
+use stunnel::ucp::UcpListener;
 
 fn main() {
     let args: Vec<_> = env::args().collect();
@@ -47,7 +48,16 @@ fn main() {
     info!("starting up");
 
     if enable_ucp {
-        UcpTunnel::new(key.clone(), listen_addr.clone());
+        let k = key.clone();
+        let addr = listen_addr.clone();
+        task::spawn(async move {
+            let mut listener = UcpListener::bind(&addr).await;
+
+            loop {
+                let stream = listener.incoming().await;
+                UcpTunnel::new(k.clone(), stream);
+            }
+        });
     }
 
     task::block_on(async move {

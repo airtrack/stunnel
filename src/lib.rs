@@ -129,35 +129,4 @@ mod protocol {
         let buf = [sc::HEARTBEAT_RSP];
         buf
     }
-
-    /*
-    pub fn read_cmd(buf: &[u8]) -> u8 {
-        buf[0]
-    }
-
-    pub fn read_id(buf: &[u8]) -> u32 {
-        let id = unsafe { *(buf.as_ptr().offset(1) as *const u32) };
-        u32::from_be(id)
-    }
-
-    pub fn read_id_len(buf: &[u8]) -> (u32, usize) {
-        let id = unsafe { *(buf.as_ptr().offset(1) as *const u32) };
-        let len = unsafe { *(buf.as_ptr().offset(5) as *const u32) };
-        (u32::from_be(id), u32::from_be(len) as usize)
-    }
-
-    pub fn read_domain_port(buf: &[u8]) -> u16 {
-        let total_len = get_total_packet_len(buf);
-        let port = unsafe {
-            let offset = (total_len - 2) as isize;
-            *(buf.as_ptr().offset(offset) as *const u16)
-        };
-        u16::from_be(port)
-    }
-
-    pub fn get_total_packet_len(buf: &[u8]) -> usize {
-        let (_, len) = read_id_len(buf);
-        len + 9
-    }
-    */
 }
