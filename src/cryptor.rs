@@ -39,7 +39,7 @@ impl Cryptor {
     }
 
     pub fn ctr_as_slice(&self) -> &[u8] {
-        &self.ctr[..]
+        &self.ctr
     }
 
     pub fn encrypt(&mut self, data: &[u8]) -> Vec<u8> {

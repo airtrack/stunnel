@@ -61,7 +61,7 @@ mod protocol {
         let mut buf = vec![0; 9 + data.len()];
         let len = data.len() as u32;
 
-        write_cmd_id_len(&mut buf[..], cmd, id, len);
+        write_cmd_id_len(&mut buf, cmd, id, len);
         buf[9..].copy_from_slice(data);
 
         buf
@@ -81,7 +81,7 @@ mod protocol {
         let mut buf = vec![0; buf_len];
         let len = domain.len() as u32 + 2;
 
-        write_cmd_id_len(&mut buf[..], cs::CONNECT_DOMAIN_NAME, id, len);
+        write_cmd_id_len(&mut buf, cs::CONNECT_DOMAIN_NAME, id, len);
         buf[9..buf_len - 2].copy_from_slice(domain);
 
         unsafe {

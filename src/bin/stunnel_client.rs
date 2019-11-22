@@ -90,7 +90,7 @@ async fn run_tunnel_port(mut stream: TcpStream,
 
     let addr = match read_port.read().await {
         TunnelPortMsg::ConnectOk(buf) => {
-            from_utf8(&buf[..]).unwrap().to_socket_addrs().unwrap().nth(0)
+            from_utf8(&buf).unwrap().to_socket_addrs().unwrap().nth(0)
         },
 
         _ => None

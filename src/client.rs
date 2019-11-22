@@ -228,7 +228,7 @@ async fn process_tunnel_read<R: Read + Unpin>(
     let mut ctr = vec![0; CTR_SIZE];
     stream.read_exact(&mut ctr).await?;
 
-    let mut decryptor = Cryptor::with_ctr(&key[..], ctr);
+    let mut decryptor = Cryptor::with_ctr(&key, ctr);
 
     loop {
         let mut op = [0u8; 1];
@@ -261,7 +261,7 @@ async fn process_tunnel_read<R: Read + Unpin>(
                 let mut buf = vec![0; len as usize];
                 stream.read_exact(&mut buf).await?;
 
-                let data = decryptor.decrypt(&buf[..]);
+                let data = decryptor.decrypt(&buf);
 
                 if op == sc::CONNECT_OK {
                     core_tx.send(TunnelMsg::SCConnectOk(id, data)).await;
@@ -283,7 +283,7 @@ async fn process_tunnel_write<W: Write + Unpin>(
     port_map: &mut PortMap,
     stream: &mut W,
 ) -> std::io::Result<()> {
-    let mut encryptor = Cryptor::new(&key[..]);
+    let mut encryptor = Cryptor::new(&key);
     let mut alive_time = get_time();
 
     let duration = Duration::from_millis(HEARTBEAT_INTERVAL_MS as u64);
@@ -291,7 +291,7 @@ async fn process_tunnel_write<W: Write + Unpin>(
     let mut msg_stream = timer_stream.merge(core_rx);
 
     stream.write_all(encryptor.ctr_as_slice()).await?;
-    stream.write_all(&encryptor.encrypt(&VERIFY_DATA)[..]).await?;
+    stream.write_all(&encryptor.encrypt(&VERIFY_DATA)).await?;
 
     loop {
         match msg_stream.next().await {
@@ -336,8 +336,8 @@ async fn process_tunnel_msg<W: Write + Unpin>(
         },
 
         TunnelMsg::CSConnect(id, buf) => {
-            let data = encryptor.encrypt(&buf[..]);
-            stream.write_all(&pack_cs_connect_msg(id, &data[..])[..]).await?;
+            let data = encryptor.encrypt(&buf);
+            stream.write_all(&pack_cs_connect_msg(id, &data)).await?;
         },
 
         TunnelMsg::CSConnectDN(id, buf, port) => {
@@ -349,9 +349,9 @@ async fn process_tunnel_msg<W: Write + Unpin>(
                 value.port = port;
             }
 
-            let data = encryptor.encrypt(&buf[..]);
-            let packed_buffer = pack_cs_connect_domain_msg(id, &data[..], port);
-            stream.write_all(&packed_buffer[..]).await?;
+            let data = encryptor.encrypt(&buf);
+            let packed_buffer = pack_cs_connect_domain_msg(id, &data, port);
+            stream.write_all(&packed_buffer).await?;
         },
 
         TunnelMsg::CSShutdownWrite(id) => {
@@ -370,8 +370,8 @@ async fn process_tunnel_msg<W: Write + Unpin>(
         },
 
         TunnelMsg::CSData(id, buf) => {
-            let data = encryptor.encrypt(&buf[..]);
-            stream.write_all(&pack_cs_data_msg(id, &data[..])[..]).await?;
+            let data = encryptor.encrypt(&buf);
+            stream.write_all(&pack_cs_data_msg(id, &data)).await?;
         },
 
         TunnelMsg::CSClosePort(id) => {
