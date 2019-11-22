@@ -425,12 +425,14 @@ impl InnerStream {
         let send_buffer = unsafe { &mut *self.send_buffer.as_ptr() };
 
         if let Some(packet) = send_buffer.back_mut() {
-            let remain = min(packet.remaining_load(), buf.len());
-            if remain > 0 {
-                packet.payload_write_slice(&buf[0..remain]);
-            }
+            if packet.cmd == CMD_DATA {
+                let remain = min(packet.remaining_load(), buf.len());
+                if remain > 0 {
+                    packet.payload_write_slice(&buf[0..remain]);
+                }
 
-            pos = remain;
+                pos = remain;
+            }
         }
 
         if pos < buf.len() {
@@ -891,7 +893,7 @@ impl UcpStream {
         loop {
             let mut packet = Box::new(UcpPacket::new());
             let result = io::timeout(
-                Duration::from_secs(15),
+                Duration::from_secs(5),
                 inner.socket.recv_from(&mut packet.buf))
                 .await;
 

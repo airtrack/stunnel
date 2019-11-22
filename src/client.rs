@@ -1,19 +1,16 @@
-// use std::thread;
-// use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::Shutdown;
 use std::time::Duration;
-// use std::rc::Rc;
 use std::vec::Vec;
 
 use async_std::prelude::*;
-use async_std::io::Write;
+use async_std::io::{Read, Write};
 use async_std::sync::{Sender, Receiver, channel};
 use async_std::net::TcpStream;
 use async_std::task;
 
 use time::{get_time, Timespec};
-// use super::ucp::{UcpClient, UcpStream};
+use super::ucp::UcpStream;
 use super::timer;
 use super::cryptor::*;
 use super::protocol::*;
@@ -95,15 +92,18 @@ impl TcpTunnel {
 }
 
 impl UcpTunnel {
-    pub fn new(_tid: u32, _server_addr: String, _key: Vec<u8>) -> Tunnel {
-        let (tx, _rx) = channel(10000);
+    pub fn new(tid: u32, server_addr: String, key: Vec<u8>) -> Tunnel {
+        let (tx, rx) = channel(10000);
+        let tx2 = tx.clone();
 
-/*
-        thread::spawn(move || {
-            ucp_tunnel_core_task(tid, server_addr, key, Rc::new(rx));
+        task::spawn(async move {
+            loop {
+                ucp_tunnel_core_task(tid, server_addr.clone(),
+                                     key.clone(), rx.clone(), tx.clone()).await;
+            }
         });
-*/
-        Tunnel { id: 1, core_tx: tx }
+
+        Tunnel { id: 1, core_tx: tx2 }
     }
 }
 
@@ -155,202 +155,14 @@ struct PortMapValue {
 
 type PortMap = HashMap<u32, PortMapValue>;
 
-/*
-struct UcpTask {
+async fn tcp_tunnel_core_task(
     tid: u32,
+    server_addr: String,
     key: Vec<u8>,
-    buffer: Vec<u8>,
-    alive_time: Timespec,
-    heartbeat_time: Timespec,
-    encryptor: Option<Cryptor>,
-    decryptor: Option<Cryptor>,
-    port_map: Rc<RefCell<PortMap>>,
-    core_rx: Rc<Receiver<TunnelMsg>>
-}
-
-impl UcpTask {
-    fn new(tid: u32, key: Vec<u8>, port_map: Rc<RefCell<PortMap>>,
-           core_rx: Rc<Receiver<TunnelMsg>>) -> UcpTask {
-        UcpTask {
-            tid: tid, key: key,
-            buffer: Vec::new(),
-            alive_time: get_time(),
-            heartbeat_time: get_time(),
-            encryptor: None, decryptor: None,
-            port_map: port_map, core_rx: core_rx
-        }
-    }
-
-    fn update(&mut self, ucp: &mut UcpStream) -> bool {
-        if !self.heartbeat(ucp) {
-            return false
-        }
-
-        if self.make_cryptor(ucp) {
-            self.read_data_and_process(ucp);
-            self.process_pending_tunnel_messages(ucp);
-        }
-
-        true
-    }
-
-    fn heartbeat(&mut self, ucp: &mut UcpStream) -> bool {
-        let cur_time = get_time();
-        let duration = cur_time - self.alive_time;
-        if duration.num_milliseconds() > ALIVE_TIMEOUT_TIME_MS {
-            return false
-        }
-
-        let interval = cur_time - self.heartbeat_time;
-        if interval.num_milliseconds() > HEARTBEAT_INTERVAL_MS {
-            ucp.send(&pack_cs_heartbeat_msg());
-            self.heartbeat_time = cur_time;
-        }
-        true
-    }
-
-    fn make_cryptor(&mut self, ucp: &mut UcpStream) -> bool {
-        if self.encryptor.is_none() {
-            self.encryptor = Some(Cryptor::new(&self.key[..]));
-            let encryptor = self.encryptor.as_mut().unwrap();
-
-            ucp.send(encryptor.ctr_as_slice());
-            ucp.send(&encryptor.encrypt(&VERIFY_DATA)[..]);
-        }
-
-        if self.decryptor.is_none() {
-            let mut buf = vec![0u8; CTR_SIZE];
-            let len = ucp.recv(&mut buf[..]);
-            buf.truncate(len);
-            self.buffer.append(&mut buf);
-
-            if self.buffer.len() >= CTR_SIZE {
-                let ctr = self.buffer[0..CTR_SIZE].to_vec();
-                self.buffer.drain(0..CTR_SIZE);
-                self.decryptor = Some(Cryptor::with_ctr(&self.key[..], ctr));
-            }
-        }
-
-        self.encryptor.is_some() && self.decryptor.is_some()
-    }
-
-    fn read_data_and_process(&mut self, ucp: &mut UcpStream) {
-        loop {
-            let mut buf = vec![0u8; 1024];
-            let len = ucp.recv(&mut buf[..]);
-            match len {
-                0 => { break },
-                _ => {
-                    buf.truncate(len);
-                    self.buffer.append(&mut buf);
-                }
-            }
-        }
-
-        while let Some(msg) = self.parse_buffer_msg() {
-            self.process_tunnel_msg(ucp, msg);
-        }
-    }
-
-    fn parse_buffer_msg(&mut self) -> Option<TunnelMsg> {
-        if self.buffer.is_empty() {
-            return None
-        }
-
-        let mut msg = None;
-        let mut consumed_bytes = 0;
-
-        match read_cmd(&self.buffer[..]) {
-            sc::HEARTBEAT_RSP => {
-                msg = Some(TunnelMsg::SCHeartbeat);
-                consumed_bytes = 1;
-            },
-
-            sc::CLOSE_PORT => if self.buffer.len() >= 5 {
-                let id = read_id(&self.buffer[..]);
-                msg = Some(TunnelMsg::SCClosePort(id));
-                consumed_bytes = 5;
-            },
-
-            sc::SHUTDOWN_WRITE => if self.buffer.len() >= 5 {
-                let id = read_id(&self.buffer[..]);
-                msg = Some(TunnelMsg::SCShutdownWrite(id));
-                consumed_bytes = 5;
-            },
-
-            sc::CONNECT_OK => if self.buffer.len() >= 9 {
-                let total_len = get_total_packet_len(&self.buffer[..]);
-                if self.buffer.len() >= total_len {
-                    let (id, len) = read_id_len(&self.buffer[..]);
-                    let data = self.decryptor.as_mut().unwrap()
-                        .decrypt(&self.buffer[9..(9 + len)]);
-
-                    msg = Some(TunnelMsg::SCConnectOk(id, data));
-                    consumed_bytes = total_len;
-                }
-            },
-
-            sc::DATA => if self.buffer.len() >= 9 {
-                let total_len = get_total_packet_len(&self.buffer[..]);
-                if self.buffer.len() >= total_len {
-                    let (id, len) = read_id_len(&self.buffer[..]);
-                    let data = self.decryptor.as_mut().unwrap()
-                        .decrypt(&self.buffer[9..(9 + len)]);
-
-                    msg = Some(TunnelMsg::SCData(id, data));
-                    consumed_bytes = total_len;
-                }
-            },
-
-            _ => {}
-        }
-
-        if consumed_bytes > 0 {
-            self.buffer.drain(0..consumed_bytes);
-        }
-
-        msg
-    }
-
-    fn process_pending_tunnel_messages(&mut self, ucp: &mut UcpStream) {
-        while let Some(msg) = self.core_rx.try_recv() {
-            self.process_tunnel_msg(ucp, msg);
-        }
-    }
-
-    fn process_tunnel_msg(&mut self, ucp: &mut UcpStream, msg: TunnelMsg) {
-        let _ = process_tunnel_msg(
-            self.tid, msg, &mut self.alive_time,
-            &mut *self.port_map.borrow_mut(),
-            self.encryptor.as_mut().unwrap(),
-            |buf| { ucp.send(buf); Ok(()) });
-    }
-}
-
-fn ucp_tunnel_core_task(tid: u32, server_addr: String, key: Vec<u8>,
-                        core_rx: Rc<Receiver<TunnelMsg>>) {
-    loop {
-        let port_map = Rc::new(RefCell::new(PortMap::new()));
-        let mut ucp_client = UcpClient::connect(&server_addr[..]);
-        let mut ucp_task = UcpTask::new(
-            tid, key.clone(), port_map.clone(), core_rx.clone());
-
-        ucp_client.set_on_update(move |ucp| { ucp_task.update(ucp) });
-        ucp_client.set_on_broken(|_| {});
-        ucp_client.run();
-
-        info!("tunnel {} broken", tid);
-        for (_, value) in port_map.borrow().iter() {
-            value.tx.send(TunnelPortMsg::ClosePort);
-        }
-    }
-}
-*/
-
-async fn tcp_tunnel_core_task(tid: u32, server_addr: String, key: Vec<u8>,
-                              core_rx: Receiver<TunnelMsg>,
-                              core_tx: Sender<TunnelMsg>) {
-    let stream = match TcpStream::connect(&server_addr[..]).await {
+    core_rx: Receiver<TunnelMsg>,
+    core_tx: Sender<TunnelMsg>,
+) {
+    let stream = match TcpStream::connect(&server_addr).await {
         Ok(stream) => stream,
 
         Err(_) => {
@@ -362,26 +174,57 @@ async fn tcp_tunnel_core_task(tid: u32, server_addr: String, key: Vec<u8>,
     let mut port_map = PortMap::new();
     let (reader, writer) = &mut (&stream, &stream);
     let r = async {
-        let _ = process_tcp_tunnel_read(key.clone(), reader, core_tx.clone()).await;
+        let _ = process_tunnel_read(key.clone(), core_tx.clone(), reader).await;
         let _ = stream.shutdown(Shutdown::Both);
     };
     let w = async {
-        let _ = process_tcp_tunnel_write(tid, key.clone(), core_rx.clone(),
-                                         writer, &mut port_map).await;
+        let _ = process_tunnel_write(tid, key.clone(), core_rx.clone(),
+                                     &mut port_map, writer).await;
         let _ = stream.shutdown(Shutdown::Both);
     };
     let _ = r.join(w).await;
 
     info!("Tcp tunnel {} broken", tid);
-    let _ = stream.shutdown(Shutdown::Both);
 
     for (_, value) in port_map.iter() {
         value.tx.send(TunnelPortMsg::ClosePort).await;
     }
 }
 
-async fn process_tcp_tunnel_read(key: Vec<u8>, stream: &mut &TcpStream,
-                                 core_tx: Sender<TunnelMsg>) -> std::io::Result<()> {
+async fn ucp_tunnel_core_task(
+    tid: u32,
+    server_addr: String,
+    key: Vec<u8>,
+    core_rx: Receiver<TunnelMsg>,
+    core_tx: Sender<TunnelMsg>,
+) {
+    let stream = UcpStream::connect(&server_addr).await;
+
+    let mut port_map = PortMap::new();
+    let (reader, writer) = &mut (&stream, &stream);
+    let r = async {
+        let _ = process_tunnel_read(key.clone(), core_tx.clone(), reader).await;
+        stream.shutdown();
+    };
+    let w = async {
+        let _ = process_tunnel_write(tid, key.clone(), core_rx.clone(),
+                                     &mut port_map, writer).await;
+        stream.shutdown();
+    };
+    let _ = r.join(w).await;
+
+    info!("Ucp tunnel {} broken", tid);
+
+    for (_, value) in port_map.iter() {
+        value.tx.send(TunnelPortMsg::ClosePort).await;
+    }
+}
+
+async fn process_tunnel_read<R: Read + Unpin>(
+    key: Vec<u8>,
+    core_tx: Sender<TunnelMsg>,
+    stream: &mut R,
+) -> std::io::Result<()> {
     let mut ctr = vec![0; CTR_SIZE];
     stream.read_exact(&mut ctr).await?;
 
@@ -431,14 +274,15 @@ async fn process_tcp_tunnel_read(key: Vec<u8>, stream: &mut &TcpStream,
         }
     }
 
-    let _ = stream.shutdown(Shutdown::Both);
     Ok(())
 }
 
-async fn process_tcp_tunnel_write(tid: u32, key: Vec<u8>,
-                                  core_rx: Receiver<TunnelMsg>,
-                                  stream: &mut &TcpStream,
-                                  port_map: &mut PortMap) -> std::io::Result<()> {
+async fn process_tunnel_write<W: Write + Unpin>(
+    tid: u32, key: Vec<u8>,
+    core_rx: Receiver<TunnelMsg>,
+    port_map: &mut PortMap,
+    stream: &mut W,
+) -> std::io::Result<()> {
     let mut encryptor = Cryptor::new(&key[..]);
     let mut alive_time = get_time();
 
@@ -480,7 +324,7 @@ async fn process_tunnel_msg<W: Write + Unpin>(
     alive_time: &mut Timespec,
     port_map: &mut PortMap,
     encryptor: &mut Cryptor,
-    stream: &mut W
+    stream: &mut W,
 ) -> std::io::Result<()> {
     match msg {
         TunnelMsg::CSOpenPort(id, tx) => {
