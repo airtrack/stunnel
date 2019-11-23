@@ -67,7 +67,7 @@ impl Tunnel {
         let id = self.id;
         self.id += 1;
 
-        let (tx, rx) = channel(500);
+        let (tx, rx) = channel(1000);
         self.core_tx.send(TunnelMsg::CSOpenPort(id, tx)).await;
 
         (
