@@ -164,7 +164,7 @@ fn main() {
     let mut opts = getopts::Options::new();
     opts.reqopt("s", "server", "server address", "server-address");
     opts.reqopt("k", "key", "secret key", "key");
-    opts.reqopt("c", "tunnel-count", "tunnel count", "tunnel-count");
+    opts.optopt("c", "tunnel-count", "tunnel count", "tunnel-count");
     opts.optopt("l", "listen", "listen address", "listen-address");
     opts.optopt("", "log", "log path", "log-path");
     opts.optflag("", "enable-ucp", "enable ucp");
@@ -178,7 +178,7 @@ fn main() {
     };
 
     let server_addr = matches.opt_str("s").unwrap();
-    let tunnel_count = matches.opt_str("c").unwrap();
+    let tunnel_count = matches.opt_str("c").unwrap_or(String::new());
     let key = matches.opt_str("k").unwrap().into_bytes();
     let log_path = matches.opt_str("log").unwrap_or(String::new());
     let enable_ucp = matches.opt_present("enable-ucp");
@@ -191,10 +191,7 @@ fn main() {
     }
 
     let count: u32 = match tunnel_count.parse() {
-        Err(_) | Ok(0) => {
-            println!("tunnel-count must greater than 0");
-            return;
-        }
+        Err(_) | Ok(0) => 1,
         Ok(count) => count,
     };
 
