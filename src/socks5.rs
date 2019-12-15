@@ -81,15 +81,15 @@ pub async fn handshake(stream: &mut TcpStream) -> std::io::Result<Destination> {
 }
 
 pub async fn destination_unreached(stream: &mut TcpStream) -> std::io::Result<()> {
-    let dest = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
-    destination_result(stream, dest, REP_FAILURE).await
+    let bind_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
+    destination_result(stream, bind_addr, REP_FAILURE).await
 }
 
 pub async fn destination_connected(
     stream: &mut TcpStream,
-    dest: SocketAddr,
+    bind_addr: SocketAddr,
 ) -> std::io::Result<()> {
-    destination_result(stream, dest, REP_SUCCESS).await
+    destination_result(stream, bind_addr, REP_SUCCESS).await
 }
 
 async fn choose_method(stream: &mut TcpStream, method: u8) -> std::io::Result<()> {
@@ -99,10 +99,10 @@ async fn choose_method(stream: &mut TcpStream, method: u8) -> std::io::Result<()
 
 async fn destination_result(
     stream: &mut TcpStream,
-    dest: SocketAddr,
+    bind_addr: SocketAddr,
     rsp: u8,
 ) -> std::io::Result<()> {
-    match dest {
+    match bind_addr {
         SocketAddr::V4(ipv4) => {
             let mut buf = [0u8; 10];
 
