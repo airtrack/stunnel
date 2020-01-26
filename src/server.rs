@@ -132,43 +132,38 @@ impl PortHub {
         };
     }
 
-    async fn connect(&self, id: u32, domain: Vec<u8>, port: u16) {
-        if let Some(value) = self.0.get(&id) {
-            value.tx.send(TunnelPortMsg::ConnectDN(domain, port)).await;
-        };
+    fn clear_ports(&mut self) {
+        self.0.clear();
     }
 
-    async fn client_send_data(&self, id: u32, op: u8, buf: Vec<u8>) {
-        if let Some(value) = self.0.get(&id) {
-            value.tx.send(TunnelPortMsg::Data(op, buf)).await;
-        };
-    }
-
-    async fn client_close_port(&mut self, id: u32) {
-        if let Some(value) = self.0.get(&id) {
-            value.tx.send(TunnelPortMsg::ClosePort).await;
-        };
-
+    fn client_close_port(&mut self, id: u32) {
         self.0.remove(&id);
     }
 
-    async fn server_close_port(&mut self, id: u32) {
-        if let Some(value) = self.0.get(&id) {
-            value.tx.send(TunnelPortMsg::ClosePort).await;
-        };
-
+    fn server_close_port(&mut self, id: u32) {
         self.0.remove(&id);
     }
 
-    async fn client_shutdown(&self, id: u32) {
-        if let Some(value) = self.0.get(&id) {
-            value.tx.send(TunnelPortMsg::ShutdownWrite).await;
-        };
+    async fn connect(&mut self, id: u32, domain: Vec<u8>, port: u16) {
+        self.try_send_msg(id, TunnelPortMsg::ConnectDN(domain, port))
+            .await;
     }
 
-    async fn clear_ports(&self) {
-        for (_, value) in self.0.iter() {
-            value.tx.send(TunnelPortMsg::ClosePort).await;
+    async fn client_send_data(&mut self, id: u32, op: u8, buf: Vec<u8>) {
+        self.try_send_msg(id, TunnelPortMsg::Data(op, buf)).await;
+    }
+
+    async fn client_shutdown(&mut self, id: u32) {
+        self.try_send_msg(id, TunnelPortMsg::ShutdownWrite).await;
+    }
+
+    async fn try_send_msg(&mut self, id: u32, msg: TunnelPortMsg) {
+        if let Some(value) = self.0.get(&id) {
+            if value.tx.is_full() {
+                self.0.remove(&id);
+            } else {
+                value.tx.send(msg).await;
+            }
         }
     }
 }
@@ -278,7 +273,7 @@ async fn tcp_tunnel_core_task(key: Vec<u8>, stream: TcpStream) {
     };
     let _ = r.join(w).await;
 
-    port_hub.clear_ports().await;
+    port_hub.clear_ports();
 }
 
 async fn ucp_tunnel_core_task(key: Vec<u8>, stream: UcpStream) {
@@ -298,7 +293,7 @@ async fn ucp_tunnel_core_task(key: Vec<u8>, stream: UcpStream) {
     };
     let _ = r.join(w).await;
 
-    port_hub.clear_ports().await;
+    port_hub.clear_ports();
 }
 
 async fn process_tunnel_read<R: Read + Unpin>(
@@ -461,7 +456,7 @@ async fn process_tunnel_msg<W: Write + Unpin>(
 
         TunnelMsg::CSClosePort(id) => {
             *alive_time = get_time();
-            port_hub.client_close_port(id).await;
+            port_hub.client_close_port(id);
         }
 
         TunnelMsg::CSShutdownWrite(id) => {
@@ -480,7 +475,7 @@ async fn process_tunnel_msg<W: Write + Unpin>(
         }
 
         TunnelMsg::SCClosePort(id) => {
-            port_hub.server_close_port(id).await;
+            port_hub.server_close_port(id);
             stream.write_all(&pack_sc_close_port_msg(id)).await?;
         }
 
