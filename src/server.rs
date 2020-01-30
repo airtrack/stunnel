@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::Shutdown;
 use std::str::from_utf8;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::vec::Vec;
 
 use async_std::io::{Read, Write};
@@ -14,7 +14,6 @@ use super::cryptor::*;
 use super::protocol::*;
 use super::timer;
 use super::ucp::UcpStream;
-use time::{get_time, Timespec};
 
 #[derive(Clone)]
 enum TunnelMsg {
@@ -380,7 +379,7 @@ async fn process_tunnel_write<W: Write + Unpin>(
     port_hub: &mut PortHub,
     stream: &mut W,
 ) -> std::io::Result<()> {
-    let mut alive_time = get_time();
+    let mut alive_time = Instant::now();
     let mut encryptor = Cryptor::new(&key);
 
     let duration = Duration::from_millis(HEARTBEAT_INTERVAL_MS as u64);
@@ -392,8 +391,8 @@ async fn process_tunnel_write<W: Write + Unpin>(
     loop {
         match msg_stream.next().await {
             Some(TunnelMsg::Heartbeat) => {
-                let duration = get_time() - alive_time;
-                if duration.num_milliseconds() > ALIVE_TIMEOUT_TIME_MS {
+                let duration = Instant::now() - alive_time;
+                if duration.as_millis() > ALIVE_TIMEOUT_TIME_MS {
                     break;
                 }
             }
@@ -422,19 +421,19 @@ async fn process_tunnel_write<W: Write + Unpin>(
 async fn process_tunnel_msg<W: Write + Unpin>(
     msg: TunnelMsg,
     core_tx: &Sender<TunnelMsg>,
-    alive_time: &mut Timespec,
+    alive_time: &mut Instant,
     port_hub: &mut PortHub,
     encryptor: &mut Cryptor,
     stream: &mut W,
 ) -> std::io::Result<()> {
     match msg {
         TunnelMsg::CSHeartbeat => {
-            *alive_time = get_time();
+            *alive_time = Instant::now();
             stream.write_all(&pack_sc_heartbeat_rsp_msg()).await?;
         }
 
         TunnelMsg::CSOpenPort(id) => {
-            *alive_time = get_time();
+            *alive_time = Instant::now();
             let (tx, rx) = channel(1000);
             port_hub.add_port(id, tx);
 
@@ -455,22 +454,22 @@ async fn process_tunnel_msg<W: Write + Unpin>(
         }
 
         TunnelMsg::CSClosePort(id) => {
-            *alive_time = get_time();
+            *alive_time = Instant::now();
             port_hub.client_close_port(id);
         }
 
         TunnelMsg::CSShutdownWrite(id) => {
-            *alive_time = get_time();
+            *alive_time = Instant::now();
             port_hub.client_shutdown(id).await;
         }
 
         TunnelMsg::CSConnectDN(id, domain, port) => {
-            *alive_time = get_time();
+            *alive_time = Instant::now();
             port_hub.connect(id, domain, port).await;
         }
 
         TunnelMsg::CSData(op, id, buf) => {
-            *alive_time = get_time();
+            *alive_time = Instant::now();
             port_hub.client_send_data(id, op, buf).await;
         }
 

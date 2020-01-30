@@ -14,9 +14,8 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::vec::Vec;
-use time::{get_time, Timespec};
 
 const CMD_SYN: u8 = 128;
 const CMD_SYN_ACK: u8 = 129;
@@ -27,8 +26,8 @@ const CMD_HEARTBEAT_ACK: u8 = 133;
 const UCP_PACKET_META_SIZE: usize = 29;
 const DEFAULT_WINDOW: u32 = 512;
 const DEFAULT_RTO: u32 = 100;
-const HEARTBEAT_INTERVAL_MILLIS: i64 = 2500;
-const UCP_STREAM_BROKEN_MILLIS: i64 = 20000;
+const HEARTBEAT_INTERVAL_MILLIS: u128 = 2500;
+const UCP_STREAM_BROKEN_MILLIS: u128 = 20000;
 const SKIP_RESEND_TIMES: u32 = 2;
 
 #[derive(Clone)]
@@ -229,9 +228,9 @@ struct InnerStream {
     alive: AtomicBool,
     socket: Arc<UdpSocket>,
     remote_addr: SocketAddr,
-    initial_time: Timespec,
-    alive_time: Cell<Timespec>,
-    heartbeat: Cell<Timespec>,
+    initial_time: Instant,
+    alive_time: Cell<Instant>,
+    heartbeat: Cell<Instant>,
     state: Cell<UcpState>,
 
     send_queue: Cell<UcpPacketQueue>,
@@ -271,9 +270,9 @@ impl InnerStream {
             alive: AtomicBool::new(true),
             socket: socket,
             remote_addr: remote_addr,
-            initial_time: get_time(),
-            alive_time: Cell::new(get_time()),
-            heartbeat: Cell::new(get_time()),
+            initial_time: Instant::now(),
+            alive_time: Cell::new(Instant::now()),
+            heartbeat: Cell::new(Instant::now()),
             state: Cell::new(UcpState::NONE),
 
             send_queue: Cell::new(UcpPacketQueue::new()),
@@ -471,8 +470,8 @@ impl InnerStream {
     }
 
     fn check_if_alive(&self) -> bool {
-        let now = get_time();
-        let interval = (now - self.alive_time.get()).num_milliseconds();
+        let now = Instant::now();
+        let interval = (now - self.alive_time.get()).as_millis();
         let alive = interval < UCP_STREAM_BROKEN_MILLIS;
 
         if !alive {
@@ -487,8 +486,8 @@ impl InnerStream {
     }
 
     async fn do_heartbeat(&self) {
-        let now = get_time();
-        let interval = (now - self.heartbeat.get()).num_milliseconds();
+        let now = Instant::now();
+        let interval = (now - self.heartbeat.get()).as_millis();
 
         if interval >= HEARTBEAT_INTERVAL_MILLIS {
             let mut heartbeat = self.new_noseq_packet(CMD_HEARTBEAT);
@@ -628,7 +627,7 @@ impl InnerStream {
             return;
         }
 
-        self.alive_time.set(get_time());
+        self.alive_time.set(Instant::now());
         self.remote_window.set(packet.window);
 
         let state = self.state.get();
@@ -787,7 +786,7 @@ impl InnerStream {
     }
 
     fn process_heartbeat_ack(&self) {
-        self.alive_time.set(get_time());
+        self.alive_time.set(Instant::now());
     }
 
     fn process_an_ack(&self, seq: u32, timestamp: u32) -> bool {
@@ -836,7 +835,7 @@ impl InnerStream {
     }
 
     fn timestamp(&self) -> u32 {
-        (get_time() - self.initial_time).num_milliseconds() as u32
+        (Instant::now() - self.initial_time).as_millis() as u32
     }
 
     fn next_seq(&self) -> u32 {
@@ -974,7 +973,7 @@ type UcpStreamMap = HashMap<SocketAddr, Arc<InnerStream>>;
 pub struct UcpListener {
     socket: Arc<UdpSocket>,
     stream_map: UcpStreamMap,
-    timestamp: Timespec,
+    timestamp: Instant,
 }
 
 impl UcpListener {
@@ -983,7 +982,7 @@ impl UcpListener {
         UcpListener {
             socket: socket,
             stream_map: UcpStreamMap::new(),
-            timestamp: get_time(),
+            timestamp: Instant::now(),
         }
     }
 
@@ -1031,8 +1030,8 @@ impl UcpListener {
     }
 
     fn remove_dead_stream(&mut self) {
-        let now = get_time();
-        if (now - self.timestamp).num_milliseconds() < 1000 {
+        let now = Instant::now();
+        if (now - self.timestamp).as_millis() < 1000 {
             return;
         }
 

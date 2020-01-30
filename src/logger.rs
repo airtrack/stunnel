@@ -1,12 +1,11 @@
-use log;
-use log::{Level, LevelFilter, Metadata, Record, SetLoggerError};
+use chrono::prelude::*;
+use log::{self, Level, LevelFilter, Metadata, Record, SetLoggerError};
 use std::collections::vec_deque::VecDeque;
 use std::fs::{remove_file, rename, OpenOptions};
 use std::io::Write;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::vec::Vec;
-use time::{at, get_time, strftime};
 
 struct ChannelLogger {
     level: Level,
@@ -21,15 +20,12 @@ impl log::Log for ChannelLogger {
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
             let mut data = Vec::new();
-            let now = at(get_time());
-            let date = strftime("%F %T", &now).unwrap();
-            let microseconds = now.tm_nsec / 1000;
+            let datetime = Local::now();
 
             let _ = write!(
                 &mut data,
-                "[{}.{:06}][{}][{}:{}] - {}\n",
-                date,
-                microseconds,
+                "[{}][{}][{}:{}] - {}\n",
+                datetime.format("%F %T%.6f").to_string(),
                 record.level(),
                 record.file().unwrap(),
                 record.line().unwrap(),

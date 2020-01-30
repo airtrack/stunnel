@@ -1,12 +1,12 @@
 #[macro_use]
 extern crate log;
 extern crate async_std;
+extern crate chrono;
 extern crate crc;
 extern crate crossbeam_utils;
 extern crate crypto;
 extern crate futures_timer;
 extern crate rand;
-extern crate time;
 
 pub mod client;
 pub mod cryptor;
@@ -21,7 +21,7 @@ mod protocol {
 
     pub const VERIFY_DATA: [u8; 8] = [0xF0u8, 0xEF, 0xE, 0x2, 0xAE, 0xBC, 0x8C, 0x78];
     pub const HEARTBEAT_INTERVAL_MS: i64 = 5000;
-    pub const ALIVE_TIMEOUT_TIME_MS: i64 = 60000;
+    pub const ALIVE_TIMEOUT_TIME_MS: u128 = 60000;
 
     pub mod cs {
         pub const OPEN_PORT: u8 = 1;
