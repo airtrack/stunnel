@@ -341,7 +341,7 @@ impl PortHub {
     async fn try_send_msg(&mut self, id: u32, msg: TunnelPortMsg) {
         if let Some(value) = self.1.get(&id) {
             if value.tx.is_full() {
-                info!(
+                error!(
                     "{}.{}: the channel of {}:{} is full",
                     self.get_id(),
                     id,
