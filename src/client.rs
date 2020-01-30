@@ -479,7 +479,7 @@ async fn process_tunnel_write<W: Write + Unpin>(
     let mut encryptor = Cryptor::new(&key);
     let mut alive_time = Instant::now();
 
-    let duration = Duration::from_millis(HEARTBEAT_INTERVAL_MS as u64);
+    let duration = Duration::from_millis(HEARTBEAT_INTERVAL_MS);
     let timer_stream = timer::interval(duration, TunnelMsg::Heartbeat);
     let mut msg_stream = timer_stream.merge(core_rx);
 
