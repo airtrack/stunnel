@@ -6,7 +6,7 @@ edition = "2018"
 
 [dependencies]
 rust-crypto = "*"
-time = "*"
+time = "=0.1.41"
 rand = "*"
 log = { version = "*", features = ["std"] }
 getopts = "0.2"
