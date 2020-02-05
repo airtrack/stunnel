@@ -30,7 +30,7 @@ enum TunnelMsg {
     SCData(u32, Vec<u8>),
 
     Heartbeat,
-    TunnelPortDrop(u32),
+    TunnelPortHalfDrop(u32),
 }
 
 pub enum TunnelPortMsg {
@@ -157,7 +157,7 @@ impl TunnelWritePort {
     }
 
     pub async fn drop(&self) {
-        self.tx.send(TunnelMsg::TunnelPortDrop(self.id)).await;
+        self.tx.send(TunnelMsg::TunnelPortHalfDrop(self.id)).await;
     }
 }
 
@@ -182,7 +182,7 @@ impl TunnelReadPort {
     }
 
     pub async fn drop(&self) {
-        self.tx.send(TunnelMsg::TunnelPortDrop(self.id)).await;
+        self.tx.send(TunnelMsg::TunnelPortHalfDrop(self.id)).await;
     }
 }
 
@@ -223,7 +223,7 @@ impl PortHub {
         }
     }
 
-    fn drop_port(&mut self, id: u32) {
+    fn drop_port_half(&mut self, id: u32) {
         let self_id = self.get_id();
 
         if let Some(value) = self.1.get_mut(&id) {
@@ -587,8 +587,8 @@ async fn process_tunnel_msg<W: Write + Unpin>(
             port_hub.server_send_data(id, buf).await;
         }
 
-        TunnelMsg::TunnelPortDrop(id) => {
-            port_hub.drop_port(id);
+        TunnelMsg::TunnelPortHalfDrop(id) => {
+            port_hub.drop_port_half(id);
         }
 
         _ => {}
