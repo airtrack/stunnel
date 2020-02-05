@@ -56,7 +56,7 @@ pub struct TunnelWritePort {
 pub struct TunnelReadPort {
     id: u32,
     tx: Sender<TunnelMsg>,
-    rx: Receiver<TunnelPortMsg>,
+    rx: Option<Receiver<TunnelPortMsg>>,
 }
 
 impl Tunnel {
@@ -77,7 +77,7 @@ impl Tunnel {
             TunnelReadPort {
                 id: id,
                 tx: core_tx2,
-                rx: rx,
+                rx: Some(rx),
             },
         )
     }
@@ -162,11 +162,23 @@ impl TunnelWritePort {
 }
 
 impl TunnelReadPort {
+    pub fn drain(&mut self) {
+        self.rx = None;
+    }
+
     pub async fn read(&self) -> TunnelPortMsg {
-        match self.rx.recv().await {
-            Some(msg) => msg,
+        match self.rx {
+            Some(ref receiver) => match receiver.recv().await {
+                Some(msg) => msg,
+                None => TunnelPortMsg::ClosePort,
+            },
+
             None => TunnelPortMsg::ClosePort,
         }
+    }
+
+    pub async fn close(&self) {
+        self.tx.send(TunnelMsg::CSClosePort(self.id)).await;
     }
 
     pub async fn drop(&self) {

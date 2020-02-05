@@ -20,13 +20,14 @@ use stunnel::cryptor::Cryptor;
 use stunnel::logger;
 use stunnel::socks5;
 
-async fn process_read(stream: &mut &TcpStream, write_port: &TunnelWritePort) {
+async fn process_read(stream: &mut &TcpStream, write_port: TunnelWritePort) {
     loop {
         let mut buf = vec![0; 1024];
         match stream.read(&mut buf).await {
             Ok(0) => {
                 let _ = stream.shutdown(Shutdown::Read);
                 write_port.shutdown_write().await;
+                write_port.drop().await;
                 break;
             }
 
@@ -44,24 +45,30 @@ async fn process_read(stream: &mut &TcpStream, write_port: &TunnelWritePort) {
     }
 }
 
-async fn process_write(stream: &mut &TcpStream, read_port: &TunnelReadPort) {
+async fn process_write(stream: &mut &TcpStream, mut read_port: TunnelReadPort) {
     loop {
         let buf = match read_port.read().await {
             TunnelPortMsg::Data(buf) => buf,
 
             TunnelPortMsg::ShutdownWrite => {
                 let _ = stream.shutdown(Shutdown::Write);
+                read_port.drain();
+                read_port.drop().await;
                 break;
             }
 
             _ => {
                 let _ = stream.shutdown(Shutdown::Both);
+                read_port.drain();
+                read_port.close().await;
                 break;
             }
         };
 
         if stream.write_all(&buf).await.is_err() {
             let _ = stream.shutdown(Shutdown::Both);
+            read_port.drain();
+            read_port.close().await;
             break;
         }
     }
@@ -69,7 +76,7 @@ async fn process_write(stream: &mut &TcpStream, read_port: &TunnelReadPort) {
 
 async fn run_tunnel_port(
     mut stream: TcpStream,
-    read_port: TunnelReadPort,
+    mut read_port: TunnelReadPort,
     write_port: TunnelWritePort,
 ) {
     match socks5::handshake(&mut stream).await {
@@ -103,15 +110,14 @@ async fn run_tunnel_port(
 
     if success {
         let (reader, writer) = &mut (&stream, &stream);
-        let r = process_read(reader, &write_port);
-        let w = process_write(writer, &read_port);
+        let r = process_read(reader, write_port);
+        let w = process_write(writer, read_port);
         let _ = r.join(w).await;
     } else {
         let _ = stream.shutdown(Shutdown::Both);
+        read_port.drain();
+        write_port.close().await;
     }
-
-    read_port.drop().await;
-    write_port.drop().await;
 }
 
 fn run_tunnels(

@@ -52,7 +52,7 @@ struct TunnelWritePort {
 struct TunnelReadPort {
     id: u32,
     tx: Sender<TunnelMsg>,
-    rx: Receiver<TunnelPortMsg>,
+    rx: Option<Receiver<TunnelPortMsg>>,
 }
 
 struct Port {
@@ -101,11 +101,23 @@ impl TunnelWritePort {
 }
 
 impl TunnelReadPort {
+    fn drain(&mut self) {
+        self.rx = None;
+    }
+
     async fn read(&self) -> TunnelPortMsg {
-        match self.rx.recv().await {
-            Some(msg) => msg,
+        match self.rx {
+            Some(ref receiver) => match receiver.recv().await {
+                Some(msg) => msg,
+                None => TunnelPortMsg::ClosePort,
+            },
+
             None => TunnelPortMsg::ClosePort,
         }
+    }
+
+    async fn close(&self) {
+        self.tx.send(TunnelMsg::SCClosePort(self.id)).await;
     }
 
     async fn drop(&self) {
@@ -167,13 +179,14 @@ impl PortHub {
     }
 }
 
-async fn tunnel_port_write(stream: &mut &TcpStream, write_port: &TunnelWritePort) {
+async fn tunnel_port_write(stream: &mut &TcpStream, write_port: TunnelWritePort) {
     loop {
         let mut buf = vec![0; 1024];
         match stream.read(&mut buf).await {
             Ok(0) => {
                 let _ = stream.shutdown(Shutdown::Read);
                 write_port.shutdown_write().await;
+                write_port.drop().await;
                 break;
             }
 
@@ -191,23 +204,29 @@ async fn tunnel_port_write(stream: &mut &TcpStream, write_port: &TunnelWritePort
     }
 }
 
-async fn tunnel_port_read(stream: &mut &TcpStream, read_port: &TunnelReadPort) {
+async fn tunnel_port_read(stream: &mut &TcpStream, mut read_port: TunnelReadPort) {
     loop {
         match read_port.read().await {
             TunnelPortMsg::Data(cs::DATA, buf) => {
                 if stream.write_all(&buf).await.is_err() {
                     let _ = stream.shutdown(Shutdown::Both);
+                    read_port.drain();
+                    read_port.close().await;
                     break;
                 }
             }
 
             TunnelPortMsg::ShutdownWrite => {
                 let _ = stream.shutdown(Shutdown::Write);
+                read_port.drain();
+                read_port.drop().await;
                 break;
             }
 
             _ => {
                 let _ = stream.shutdown(Shutdown::Both);
+                read_port.drain();
+                read_port.close().await;
                 break;
             }
         }
@@ -247,12 +266,9 @@ async fn tunnel_port_task(read_port: TunnelReadPort, write_port: TunnelWritePort
     }
 
     let (reader, writer) = &mut (&stream, &stream);
-    let w = tunnel_port_write(reader, &write_port);
-    let r = tunnel_port_read(writer, &read_port);
+    let w = tunnel_port_write(reader, write_port);
+    let r = tunnel_port_read(writer, read_port);
     let _ = r.join(w).await;
-
-    read_port.drop().await;
-    write_port.drop().await;
 }
 
 async fn tcp_tunnel_core_task(key: Vec<u8>, stream: TcpStream) {
@@ -440,7 +456,7 @@ async fn process_tunnel_msg<W: Write + Unpin>(
             let read_port = TunnelReadPort {
                 id: id,
                 tx: core_tx.clone(),
-                rx: rx,
+                rx: Some(rx),
             };
 
             let write_port = TunnelWritePort {
