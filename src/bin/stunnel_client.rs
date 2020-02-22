@@ -20,7 +20,7 @@ use stunnel::cryptor::Cryptor;
 use stunnel::logger;
 use stunnel::socks5;
 
-async fn process_read(stream: &mut &TcpStream, write_port: TunnelWritePort) {
+async fn process_read(stream: &mut &TcpStream, mut write_port: TunnelWritePort) {
     loop {
         let mut buf = vec![0; 1024];
         match stream.read(&mut buf).await {
@@ -77,7 +77,7 @@ async fn process_write(stream: &mut &TcpStream, mut read_port: TunnelReadPort) {
 async fn run_tunnel_port(
     mut stream: TcpStream,
     mut read_port: TunnelReadPort,
-    write_port: TunnelWritePort,
+    mut write_port: TunnelWritePort,
 ) {
     match socks5::handshake(&mut stream).await {
         Ok(socks5::Destination::Address(addr)) => {
