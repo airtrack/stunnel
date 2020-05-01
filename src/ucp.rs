@@ -247,6 +247,8 @@ struct InnerStream {
     seq: Cell<u32>,
     una: Cell<u32>,
     rto: Cell<u32>,
+    srtt: Cell<u32>,
+    rttvar: Cell<u32>,
 }
 
 unsafe impl Send for InnerStream {}
@@ -289,6 +291,8 @@ impl InnerStream {
             seq: Cell::new(0),
             una: Cell::new(0),
             rto: Cell::new(DEFAULT_RTO),
+            srtt: Cell::new(0),
+            rttvar: Cell::new(0),
         }
     }
 
@@ -791,8 +795,7 @@ impl InnerStream {
 
     fn process_an_ack(&self, seq: u32, timestamp: u32) -> bool {
         let rtt = self.timestamp() - timestamp;
-        let rto = self.rto.get();
-        self.rto.set((rto + rtt) / 2);
+        self.update_rto(rtt);
 
         let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
         for i in 0..send_queue.len() {
@@ -807,6 +810,25 @@ impl InnerStream {
         }
 
         false
+    }
+
+    fn update_rto(&self, rtt: u32) {
+        // The calculation accuracy is milliseconds
+        let mut srtt = self.srtt.get();
+        if srtt == 0 {
+            srtt = rtt;
+        }
+        srtt = (srtt * 9 + rtt) / 10;
+
+        let mut rttvar = self.rttvar.get();
+        let delta = if rtt > srtt { rtt - srtt } else { srtt - rtt };
+        rttvar = (rttvar * 3 + delta) / 4;
+
+        let rto = srtt + 4 * rttvar;
+
+        self.rto.set(rto);
+        self.srtt.set(srtt);
+        self.rttvar.set(rttvar);
     }
 
     fn new_packet(&self, cmd: u8) -> Box<UcpPacket> {
