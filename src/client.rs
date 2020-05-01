@@ -15,6 +15,7 @@ use super::cryptor::*;
 use super::protocol::*;
 use super::timer;
 use super::ucp::UcpStream;
+use super::util::*;
 
 #[derive(Clone)]
 enum TunnelMsg {
@@ -44,7 +45,8 @@ pub enum TunnelPortMsg {
 
 pub struct Tunnel {
     id: u32,
-    core_tx: Sender<TunnelMsg>,
+    senders: SubSenders<TunnelMsg>,
+    main_sender: MainSender<TunnelMsg>,
 }
 
 pub struct TcpTunnel;
@@ -63,22 +65,22 @@ pub struct TunnelReadPort {
 
 impl Tunnel {
     pub async fn open_port(&mut self) -> (TunnelWritePort, TunnelReadPort) {
-        let core_tx1 = self.core_tx.clone();
-        let core_tx2 = self.core_tx.clone();
         let id = self.id;
         self.id += 1;
 
         let (tx, rx) = channel(1000);
-        let _ = self.core_tx.send(TunnelMsg::CSOpenPort(id, tx)).await;
+        let _ = self.main_sender.send(TunnelMsg::CSOpenPort(id, tx)).await;
+
+        let sender = self.senders.get_one_sender();
 
         (
             TunnelWritePort {
                 id: id,
-                tx: core_tx1,
+                tx: sender.clone(),
             },
             TunnelReadPort {
                 id: id,
-                tx: core_tx2,
+                tx: sender.clone(),
                 rx: Some(rx),
             },
         )
@@ -87,13 +89,13 @@ impl Tunnel {
 
 impl TcpTunnel {
     pub fn new(tid: u32, server_addr: String, key: Vec<u8>) -> Tunnel {
-        let (tx, rx) = channel(10000);
-        let tx2 = tx.clone();
+        let (main_sender, sub_senders, receivers) = channel_bus(10, 1000);
+        let core_sender = main_sender.clone();
 
         task::spawn(async move {
             let duration = Duration::from_millis(HEARTBEAT_INTERVAL_MS);
             let timer_stream = timer::interval(duration, TunnelMsg::Heartbeat);
-            let mut msg_stream = timer_stream.merge(rx);
+            let mut msg_stream = timer_stream.merge(receivers);
 
             loop {
                 tcp_tunnel_core_task(
@@ -101,7 +103,7 @@ impl TcpTunnel {
                     server_addr.clone(),
                     key.clone(),
                     &mut msg_stream,
-                    tx.clone(),
+                    core_sender.clone(),
                 )
                 .await;
             }
@@ -109,20 +111,21 @@ impl TcpTunnel {
 
         Tunnel {
             id: 1,
-            core_tx: tx2,
+            senders: sub_senders,
+            main_sender: main_sender,
         }
     }
 }
 
 impl UcpTunnel {
     pub fn new(tid: u32, server_addr: String, key: Vec<u8>) -> Tunnel {
-        let (tx, rx) = channel(10000);
-        let tx2 = tx.clone();
+        let (main_sender, sub_senders, receivers) = channel_bus(10, 1000);
+        let core_sender = main_sender.clone();
 
         task::spawn(async move {
             let duration = Duration::from_millis(HEARTBEAT_INTERVAL_MS);
             let timer_stream = timer::interval(duration, TunnelMsg::Heartbeat);
-            let mut msg_stream = timer_stream.merge(rx);
+            let mut msg_stream = timer_stream.merge(receivers);
 
             loop {
                 ucp_tunnel_core_task(
@@ -130,7 +133,7 @@ impl UcpTunnel {
                     server_addr.clone(),
                     key.clone(),
                     &mut msg_stream,
-                    tx.clone(),
+                    core_sender.clone(),
                 )
                 .await;
             }
@@ -138,7 +141,8 @@ impl UcpTunnel {
 
         Tunnel {
             id: 1,
-            core_tx: tx2,
+            senders: sub_senders,
+            main_sender: main_sender,
         }
     }
 }
