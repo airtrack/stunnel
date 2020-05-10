@@ -312,6 +312,8 @@ impl InnerStream {
             UcpState::NONE => {
                 if packet.is_syn() {
                     self.accepting(packet);
+                } else {
+                    error!("not syn packet in UcpState::NONE");
                 }
             }
             _ => {
@@ -366,6 +368,11 @@ impl InnerStream {
     }
 
     fn shutdown(&self) {
+        info!(
+            "shutdown {}, session: {}",
+            self.remote_addr,
+            self.session_id.get()
+        );
         let _l = self.lock();
         self.die();
     }
@@ -645,7 +652,9 @@ impl InnerStream {
             UcpState::ESTABLISHED => {
                 self.process_state_established(packet).await;
             }
-            UcpState::NONE => {}
+            UcpState::NONE => {
+                error!("unexpect UcpState::NONE");
+            }
         }
     }
 
@@ -662,6 +671,11 @@ impl InnerStream {
                     self.session_id.get()
                 );
             }
+        } else {
+            error!(
+                "unexpect packet.cmd: {}, packet.payload: {}",
+                packet.cmd, packet.payload
+            );
         }
     }
 
@@ -688,7 +702,9 @@ impl InnerStream {
             CMD_HEARTBEAT_ACK => {
                 self.process_heartbeat_ack();
             }
-            _ => {}
+            _ => {
+                error!("unexpect packet.cmd: {}", packet.cmd);
+            }
         }
     }
 
@@ -781,6 +797,11 @@ impl InnerStream {
                 }
                 _ => {}
             }
+        } else {
+            error!(
+                "unexpect packet.cmd: {}, packet.payload: {}",
+                packet.cmd, packet.payload
+            );
         }
     }
 
