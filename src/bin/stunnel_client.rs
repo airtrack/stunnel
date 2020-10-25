@@ -3,6 +3,7 @@ extern crate log;
 extern crate async_std;
 extern crate getopts;
 extern crate stunnel;
+extern crate tide;
 
 use std::env;
 use std::net::Shutdown;
@@ -161,6 +162,12 @@ async fn run_tunnels(
     }
 }
 
+async fn run_http_server() {
+    let mut app = tide::new();
+    app.at("/").get(|_| async { Ok("Hello, world!") });
+    let _ = app.listen("127.0.0.1:8080").await;
+}
+
 fn main() {
     let args: Vec<_> = env::args().collect();
     let program = args[0].clone();
@@ -203,6 +210,8 @@ fn main() {
     info!("starting up");
 
     task::block_on(async move {
-        run_tunnels(listen_addr, server_addr, count, key, enable_ucp).await;
+        let t = run_tunnels(listen_addr, server_addr, count, key, enable_ucp);
+        let h = run_http_server();
+        t.join(h).await;
     });
 }
