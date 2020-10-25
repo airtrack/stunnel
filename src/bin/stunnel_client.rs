@@ -9,6 +9,7 @@ use std::env;
 use std::net::Shutdown;
 use std::net::ToSocketAddrs;
 use std::str::from_utf8;
+use std::sync::Arc;
 use std::vec::Vec;
 
 use async_std::net::TcpListener;
@@ -16,10 +17,13 @@ use async_std::net::TcpStream;
 use async_std::prelude::*;
 use async_std::task;
 
+use tide::Request;
+
 use stunnel::client::*;
 use stunnel::cryptor::Cryptor;
 use stunnel::logger;
 use stunnel::socks5;
+use stunnel::ucp::UcpStreamMetrics;
 
 async fn process_read(stream: &mut &TcpStream, mut write_port: TunnelWritePort) {
     loop {
@@ -127,10 +131,11 @@ async fn run_tunnels(
     count: u32,
     key: Vec<u8>,
     enable_ucp: bool,
+    ucp_metrics: Arc<UcpStreamMetrics>,
 ) {
     let mut tunnels = Vec::new();
     if enable_ucp {
-        let tunnel = UcpTunnel::new(0, server_addr.clone(), key.clone());
+        let tunnel = UcpTunnel::new(0, server_addr.clone(), key.clone(), ucp_metrics);
         tunnels.push(tunnel);
     } else {
         for i in 0..count {
@@ -162,9 +167,25 @@ async fn run_tunnels(
     }
 }
 
-async fn run_http_server() {
-    let mut app = tide::new();
+async fn run_http_server(ucp_metrics: Arc<UcpStreamMetrics>) {
+    let mut app = tide::with_state(ucp_metrics);
+
     app.at("/").get(|_| async { Ok("Hello, world!") });
+    app.at("/ucp")
+        .get(|req: Request<Arc<UcpStreamMetrics>>| async move {
+            let metrics = req.state();
+            let send_queue = metrics.get_send_queue();
+            let recv_queue = metrics.get_recv_queue();
+            let send_buffer = metrics.get_send_buffer();
+            let rto = metrics.get_rto();
+            let srtt = metrics.get_srtt();
+
+            Ok(format!(
+                "send_queue: {}\nrecv_queue: {}\nsend_buffer: {}\nrto: {}\nsrtt: {}",
+                send_queue, recv_queue, send_buffer, rto, srtt
+            ))
+        });
+
     let _ = app.listen("127.0.0.1:8080").await;
 }
 
@@ -210,8 +231,16 @@ fn main() {
     info!("starting up");
 
     task::block_on(async move {
-        let t = run_tunnels(listen_addr, server_addr, count, key, enable_ucp);
-        let h = run_http_server();
+        let ucp_metrics = Arc::new(UcpStreamMetrics::new());
+        let t = run_tunnels(
+            listen_addr,
+            server_addr,
+            count,
+            key,
+            enable_ucp,
+            ucp_metrics.clone(),
+        );
+        let h = run_http_server(ucp_metrics);
         t.join(h).await;
     });
 }

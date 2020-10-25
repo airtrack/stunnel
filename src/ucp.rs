@@ -11,7 +11,7 @@ use std::io::{Error, ErrorKind};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
@@ -215,6 +215,46 @@ impl UcpPacket {
 
 type UcpPacketQueue = VecDeque<Box<UcpPacket>>;
 
+pub struct UcpStreamMetrics {
+    send_queue: AtomicUsize,
+    recv_queue: AtomicUsize,
+    send_buffer: AtomicUsize,
+    rto: AtomicU32,
+    srtt: AtomicU32,
+}
+
+impl UcpStreamMetrics {
+    pub fn new() -> Self {
+        Self {
+            send_queue: AtomicUsize::new(0),
+            recv_queue: AtomicUsize::new(0),
+            send_buffer: AtomicUsize::new(0),
+            rto: AtomicU32::new(0),
+            srtt: AtomicU32::new(0),
+        }
+    }
+
+    pub fn get_send_queue(&self) -> usize {
+        self.send_queue.load(Ordering::Relaxed)
+    }
+
+    pub fn get_recv_queue(&self) -> usize {
+        self.recv_queue.load(Ordering::Relaxed)
+    }
+
+    pub fn get_send_buffer(&self) -> usize {
+        self.send_buffer.load(Ordering::Relaxed)
+    }
+
+    pub fn get_rto(&self) -> u32 {
+        self.rto.load(Ordering::Relaxed)
+    }
+
+    pub fn get_srtt(&self) -> u32 {
+        self.srtt.load(Ordering::Relaxed)
+    }
+}
+
 #[derive(Clone, Copy)]
 enum UcpState {
     NONE,
@@ -226,6 +266,7 @@ enum UcpState {
 struct InnerStream {
     lock: AtomicUsize,
     alive: AtomicBool,
+    metrics: Arc<UcpStreamMetrics>,
     socket: Arc<UdpSocket>,
     remote_addr: SocketAddr,
     initial_time: Instant,
@@ -266,10 +307,15 @@ impl Drop for Lock<'_> {
 }
 
 impl InnerStream {
-    fn new(socket: Arc<UdpSocket>, remote_addr: SocketAddr) -> Self {
+    fn new(
+        socket: Arc<UdpSocket>,
+        remote_addr: SocketAddr,
+        metrics: Arc<UcpStreamMetrics>,
+    ) -> Self {
         InnerStream {
             lock: AtomicUsize::new(0),
             alive: AtomicBool::new(true),
+            metrics: metrics,
             socket: socket,
             remote_addr: remote_addr,
             initial_time: Instant::now(),
@@ -333,6 +379,8 @@ impl InnerStream {
         } else {
             self.die();
         }
+
+        self.update_metrics();
     }
 
     fn poll_read(&self, cx: &mut Context, buf: &mut [u8]) -> Poll<std::io::Result<usize>> {
@@ -472,6 +520,26 @@ impl InnerStream {
                 w.wake();
             }
         }
+    }
+
+    fn update_metrics(&self) {
+        let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
+        let recv_queue = unsafe { &mut *self.recv_queue.as_ptr() };
+        let send_buffer = unsafe { &mut *self.send_buffer.as_ptr() };
+        let rto = self.rto.get();
+        let srtt = self.srtt.get();
+
+        self.metrics
+            .send_queue
+            .store(send_queue.len(), Ordering::Relaxed);
+        self.metrics
+            .recv_queue
+            .store(recv_queue.len(), Ordering::Relaxed);
+        self.metrics
+            .send_buffer
+            .store(send_buffer.len(), Ordering::Relaxed);
+        self.metrics.rto.store(rto, Ordering::Relaxed);
+        self.metrics.srtt.store(srtt, Ordering::Relaxed);
     }
 
     fn is_send_buffer_overflow(&self) -> bool {
@@ -922,11 +990,11 @@ pub struct UcpStream {
 }
 
 impl UcpStream {
-    pub async fn connect(server_addr: &str) -> Self {
+    pub async fn connect(server_addr: &str, metrics: Arc<UcpStreamMetrics>) -> Self {
         let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
         let remote_addr = SocketAddr::from_str(server_addr).unwrap();
 
-        let inner = Arc::new(InnerStream::new(socket, remote_addr));
+        let inner = Arc::new(InnerStream::new(socket, remote_addr, metrics));
         inner.connecting();
 
         let sender = inner.clone();
@@ -1060,7 +1128,8 @@ impl UcpListener {
 
     async fn new_stream(&mut self, packet: Box<UcpPacket>, remote_addr: SocketAddr) -> UcpStream {
         info!("new ucp client from {}", remote_addr);
-        let inner = Arc::new(InnerStream::new(self.socket.clone(), remote_addr));
+        let metrics = Arc::new(UcpStreamMetrics::new());
+        let inner = Arc::new(InnerStream::new(self.socket.clone(), remote_addr, metrics));
         inner.input(packet, remote_addr).await;
 
         let sender = inner.clone();

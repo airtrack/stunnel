@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::net::Shutdown;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
@@ -14,7 +15,7 @@ use futures::sink::SinkExt;
 use super::cryptor::*;
 use super::protocol::*;
 use super::timer;
-use super::ucp::UcpStream;
+use super::ucp::{UcpStream, UcpStreamMetrics};
 use super::util::*;
 
 #[derive(Clone)]
@@ -118,7 +119,12 @@ impl TcpTunnel {
 }
 
 impl UcpTunnel {
-    pub fn new(tid: u32, server_addr: String, key: Vec<u8>) -> Tunnel {
+    pub fn new(
+        tid: u32,
+        server_addr: String,
+        key: Vec<u8>,
+        ucp_metrics: Arc<UcpStreamMetrics>,
+    ) -> Tunnel {
         let (main_sender, sub_senders, receivers) = channel_bus(10, 1000);
         let core_sender = main_sender.clone();
 
@@ -134,6 +140,7 @@ impl UcpTunnel {
                     key.clone(),
                     &mut msg_stream,
                     core_sender.clone(),
+                    ucp_metrics.clone(),
                 )
                 .await;
             }
@@ -418,8 +425,9 @@ async fn ucp_tunnel_core_task<S: Stream<Item = TunnelMsg> + Unpin>(
     key: Vec<u8>,
     msg_stream: &mut S,
     core_tx: Sender<TunnelMsg>,
+    ucp_metrics: Arc<UcpStreamMetrics>,
 ) {
-    let stream = UcpStream::connect(&server_addr).await;
+    let stream = UcpStream::connect(&server_addr, ucp_metrics).await;
 
     let mut port_hub = PortHub::new(tid);
     let (reader, writer) = &mut (&stream, &stream);
