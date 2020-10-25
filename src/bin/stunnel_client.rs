@@ -120,47 +120,45 @@ async fn run_tunnel_port(
     }
 }
 
-fn run_tunnels(
+async fn run_tunnels(
     listen_addr: String,
     server_addr: String,
     count: u32,
     key: Vec<u8>,
     enable_ucp: bool,
 ) {
-    task::block_on(async move {
-        let mut tunnels = Vec::new();
-        if enable_ucp {
-            let tunnel = UcpTunnel::new(0, server_addr.clone(), key.clone());
+    let mut tunnels = Vec::new();
+    if enable_ucp {
+        let tunnel = UcpTunnel::new(0, server_addr.clone(), key.clone());
+        tunnels.push(tunnel);
+    } else {
+        for i in 0..count {
+            let tunnel = TcpTunnel::new(i, server_addr.clone(), key.clone());
             tunnels.push(tunnel);
-        } else {
-            for i in 0..count {
-                let tunnel = TcpTunnel::new(i, server_addr.clone(), key.clone());
-                tunnels.push(tunnel);
-            }
         }
+    }
 
-        let mut index = 0;
-        let listener = TcpListener::bind(listen_addr.as_str()).await.unwrap();
-        let mut incoming = listener.incoming();
+    let mut index = 0;
+    let listener = TcpListener::bind(listen_addr.as_str()).await.unwrap();
+    let mut incoming = listener.incoming();
 
-        while let Some(stream) = incoming.next().await {
-            match stream {
-                Ok(stream) => {
-                    {
-                        let tunnel: &mut Tunnel = tunnels.get_mut(index).unwrap();
-                        let (write_port, read_port) = tunnel.open_port().await;
-                        task::spawn(async move {
-                            run_tunnel_port(stream, read_port, write_port).await;
-                        });
-                    }
-
-                    index = (index + 1) % tunnels.len();
+    while let Some(stream) = incoming.next().await {
+        match stream {
+            Ok(stream) => {
+                {
+                    let tunnel: &mut Tunnel = tunnels.get_mut(index).unwrap();
+                    let (write_port, read_port) = tunnel.open_port().await;
+                    task::spawn(async move {
+                        run_tunnel_port(stream, read_port, write_port).await;
+                    });
                 }
 
-                Err(_) => {}
+                index = (index + 1) % tunnels.len();
             }
+
+            Err(_) => {}
         }
-    });
+    }
 }
 
 fn main() {
@@ -204,5 +202,7 @@ fn main() {
     logger::init(log::Level::Info, log_path, 1, 2000000).unwrap();
     info!("starting up");
 
-    run_tunnels(listen_addr, server_addr, count, key, enable_ucp);
+    task::block_on(async move {
+        run_tunnels(listen_addr, server_addr, count, key, enable_ucp).await;
+    });
 }
