@@ -28,7 +28,7 @@ Usage
 -----
 
 	./stunnel_server -l listen-address -k key [--log log-path] [--http http-address]
-	./stunnel_client -s server-address -k key [-c tunnel-count] [-l listen-address] [--log log-path] [--enable-ucp]
+	./stunnel_client -s server-address -k key [-c tunnel-count] [-l listen-address] [--log log-path] [--http http-address] [--enable-ucp]
 
 Browser connect client listen address(`127.0.0.1:1080`) through SOCKS5.
 

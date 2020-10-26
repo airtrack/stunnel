@@ -125,27 +125,9 @@ async fn run_tunnel_port(
     }
 }
 
-async fn run_tunnels(
-    listen_addr: String,
-    server_addr: String,
-    count: u32,
-    key: Vec<u8>,
-    enable_ucp: bool,
-    ucp_metrics: Arc<UcpStreamMetrics>,
-) {
-    let mut tunnels = Vec::new();
-    if enable_ucp {
-        let tunnel = UcpTunnel::new(0, server_addr.clone(), key.clone(), ucp_metrics);
-        tunnels.push(tunnel);
-    } else {
-        for i in 0..count {
-            let tunnel = TcpTunnel::new(i, server_addr.clone(), key.clone());
-            tunnels.push(tunnel);
-        }
-    }
-
+async fn run_tunnels(mut tunnels: Vec<Tunnel>, listen_addr: String) {
     let mut index = 0;
-    let listener = TcpListener::bind(listen_addr.as_str()).await.unwrap();
+    let listener = TcpListener::bind(listen_addr).await.unwrap();
     let mut incoming = listener.incoming();
 
     while let Some(stream) = incoming.next().await {
@@ -167,9 +149,7 @@ async fn run_tunnels(
     }
 }
 
-async fn run_http_server(ucp_metrics: Arc<UcpStreamMetrics>) {
-    let mut app = tide::with_state(ucp_metrics);
-
+async fn run_http_server(mut app: tide::Server<Arc<UcpStreamMetrics>>, addr: String) {
     app.at("/").get(|_| async { Ok("Hello, world!") });
     app.at("/ucp")
         .get(|req: Request<Arc<UcpStreamMetrics>>| async move {
@@ -186,7 +166,7 @@ async fn run_http_server(ucp_metrics: Arc<UcpStreamMetrics>) {
             ))
         });
 
-    let _ = app.listen("127.0.0.1:8080").await;
+    let _ = app.listen(addr).await;
 }
 
 fn main() {
@@ -199,6 +179,7 @@ fn main() {
     opts.optopt("c", "tunnel-count", "tunnel count", "tunnel-count");
     opts.optopt("l", "listen", "listen address", "listen-address");
     opts.optopt("", "log", "log path", "log-path");
+    opts.optopt("", "http", "http address", "http-address");
     opts.optflag("", "enable-ucp", "enable ucp");
 
     let matches = match opts.parse(&args[1..]) {
@@ -214,7 +195,12 @@ fn main() {
     let key = matches.opt_str("k").unwrap().into_bytes();
     let log_path = matches.opt_str("log").unwrap_or(String::new());
     let enable_ucp = matches.opt_present("enable-ucp");
-    let listen_addr = matches.opt_str("l").unwrap_or("127.0.0.1:1080".to_string());
+    let listen_addr = matches
+        .opt_str("l")
+        .unwrap_or(String::from("127.0.0.1:1080"));
+    let http_addr = matches
+        .opt_str("http")
+        .unwrap_or(String::from("127.0.0.1:8080"));
     let (min, max) = Cryptor::key_size_range();
 
     if key.len() < min || key.len() > max {
@@ -232,15 +218,21 @@ fn main() {
 
     task::block_on(async move {
         let ucp_metrics = Arc::new(UcpStreamMetrics::new());
-        let t = run_tunnels(
-            listen_addr,
-            server_addr,
-            count,
-            key,
-            enable_ucp,
-            ucp_metrics.clone(),
-        );
-        let h = run_http_server(ucp_metrics);
+        let mut tunnels = Vec::new();
+        let app = tide::with_state(ucp_metrics.clone());
+
+        if enable_ucp {
+            let tunnel = UcpTunnel::new(0, server_addr.clone(), key.clone(), ucp_metrics);
+            tunnels.push(tunnel);
+        } else {
+            for i in 0..count {
+                let tunnel = TcpTunnel::new(i, server_addr.clone(), key.clone());
+                tunnels.push(tunnel);
+            }
+        }
+
+        let t = run_tunnels(tunnels, listen_addr);
+        let h = run_http_server(app, http_addr);
         t.join(h).await;
     });
 }
