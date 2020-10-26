@@ -15,6 +15,27 @@ use stunnel::logger;
 use stunnel::server::*;
 use stunnel::ucp::UcpListener;
 
+async fn run_ucp_server(mut listener: UcpListener, key: Vec<u8>) {
+    loop {
+        let stream = listener.incoming().await;
+        UcpTunnel::new(key.clone(), stream);
+    }
+}
+
+async fn run_tcp_server(listener: TcpListener, key: Vec<u8>) {
+    let mut incoming = listener.incoming();
+
+    while let Some(stream) = incoming.next().await {
+        match stream {
+            Ok(stream) => {
+                TcpTunnel::new(key.clone(), stream);
+            }
+
+            Err(_) => {}
+        }
+    }
+}
+
 fn main() {
     let args: Vec<_> = env::args().collect();
     let program = args[0].clone();
@@ -36,7 +57,6 @@ fn main() {
     let listen_addr = matches.opt_str("l").unwrap();
     let key = matches.opt_str("k").unwrap().into_bytes();
     let log_path = matches.opt_str("log").unwrap_or(String::new());
-    let enable_ucp = matches.opt_present("enable-ucp");
     let (min, max) = Cryptor::key_size_range();
 
     if key.len() < min || key.len() > max {
@@ -47,31 +67,12 @@ fn main() {
     logger::init(log::Level::Info, log_path, 1, 2000000).unwrap();
     info!("starting up");
 
-    if enable_ucp {
-        let k = key.clone();
-        let addr = listen_addr.clone();
-        task::spawn(async move {
-            let mut listener = UcpListener::bind(&addr).await;
-
-            loop {
-                let stream = listener.incoming().await;
-                UcpTunnel::new(k.clone(), stream);
-            }
-        });
-    }
-
     task::block_on(async move {
-        let listener = TcpListener::bind(&listen_addr).await.unwrap();
-        let mut incoming = listener.incoming();
+        let ucp_listener = UcpListener::bind(&listen_addr).await;
+        let tcp_listener = TcpListener::bind(&listen_addr).await.unwrap();
 
-        while let Some(stream) = incoming.next().await {
-            match stream {
-                Ok(stream) => {
-                    TcpTunnel::new(key.clone(), stream);
-                }
-
-                Err(_) => {}
-            }
-        }
+        let u = run_ucp_server(ucp_listener, key.clone());
+        let t = run_tcp_server(tcp_listener, key.clone());
+        u.join(t).await;
     });
 }
