@@ -157,12 +157,16 @@ async fn run_http_server(mut app: tide::Server<Arc<UcpStreamMetrics>>, addr: Str
             let send_queue = metrics.get_send_queue();
             let recv_queue = metrics.get_recv_queue();
             let send_buffer = metrics.get_send_buffer();
+            let una = metrics.get_una();
             let rto = metrics.get_rto();
             let srtt = metrics.get_srtt();
+            let rttvar = metrics.get_rttvar();
+            let rx_seq = metrics.get_rx_seq();
 
             Ok(format!(
-                "send_queue: {}\nrecv_queue: {}\nsend_buffer: {}\nrto: {}\nsrtt: {}",
-                send_queue, recv_queue, send_buffer, rto, srtt
+                "send_queue: {}\nrecv_queue: {}\nsend_buffer: {}\nrto: {}\nsrtt: {}\n\
+                 rttvar: {}\nuna: {}\nrx_seq: {}",
+                send_queue, recv_queue, send_buffer, rto, srtt, rttvar, una, rx_seq
             ))
         });
 
