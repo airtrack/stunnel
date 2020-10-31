@@ -6,6 +6,7 @@ extern crate stunnel;
 extern crate tide;
 
 use std::env;
+use std::sync::Arc;
 
 use async_std::net::TcpListener;
 use async_std::prelude::*;
@@ -14,7 +15,9 @@ use async_std::task;
 use stunnel::cryptor::Cryptor;
 use stunnel::logger;
 use stunnel::server::*;
-use stunnel::ucp::UcpListener;
+use stunnel::ucp::{UcpListener, UcpListenerMetrics};
+
+use tide::Request;
 
 async fn run_ucp_server(mut listener: UcpListener, key: Vec<u8>) {
     loop {
@@ -37,8 +40,36 @@ async fn run_tcp_server(listener: TcpListener, key: Vec<u8>) {
     }
 }
 
-async fn run_http_server(mut app: tide::Server<()>, addr: String) {
+async fn run_http_server(mut app: tide::Server<Arc<UcpListenerMetrics>>, addr: String) {
     app.at("/").get(|_| async { Ok("Hello, world!") });
+    app.at("/ucp")
+        .get(|req: Request<Arc<UcpListenerMetrics>>| async move {
+            let metrics = req.state().get_metrics().await;
+            let mut result = String::new();
+
+            result = result + &format!("Total client: {}\n", metrics.len());
+
+            for (a, m) in metrics.iter() {
+                let send_queue = m.get_send_queue();
+                let recv_queue = m.get_recv_queue();
+                let send_buffer = m.get_send_buffer();
+                let una = m.get_una();
+                let rto = m.get_rto();
+                let srtt = m.get_srtt();
+                let rttvar = m.get_rttvar();
+                let rx_seq = m.get_rx_seq();
+
+                result = result
+                    + &format!(
+                        "remote_addr: {}\nsend_queue: {}\nrecv_queue: {}\n\
+                         send_buffer: {}\nrto: {}\nsrtt: {}\nrttvar: {}\nuna: {}\nrx_seq: {}\n\n",
+                        a, send_queue, recv_queue, send_buffer, rto, srtt, rttvar, una, rx_seq
+                    );
+            }
+
+            Ok(result)
+        });
+
     let _ = app.listen(addr).await;
 }
 
@@ -77,9 +108,10 @@ fn main() {
     info!("starting up");
 
     task::block_on(async move {
-        let ucp_listener = UcpListener::bind(&listen_addr).await;
+        let metrics = Arc::new(UcpListenerMetrics::new());
+        let ucp_listener = UcpListener::bind(&listen_addr, metrics.clone()).await;
         let tcp_listener = TcpListener::bind(&listen_addr).await.unwrap();
-        let http_app = tide::new();
+        let http_app = tide::with_state(metrics);
 
         let u = run_ucp_server(ucp_listener, key.clone());
         let t = run_tcp_server(tcp_listener, key.clone());
