@@ -14,7 +14,6 @@ pub mod cryptor;
 pub mod logger;
 pub mod proxy;
 pub mod server;
-pub mod socks5;
 pub mod timer;
 pub mod ucp;
 

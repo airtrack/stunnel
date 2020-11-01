@@ -18,8 +18,7 @@ use tide::Request;
 use stunnel::client::*;
 use stunnel::cryptor::Cryptor;
 use stunnel::logger;
-use stunnel::proxy::Proxy;
-use stunnel::socks5;
+use stunnel::proxy::{socks5, Proxy};
 use stunnel::ucp::UcpStreamMetrics;
 
 async fn run_proxy_tunnels(mut tunnels: Vec<Tunnel>, listen_addr: String) {

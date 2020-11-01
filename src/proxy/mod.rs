@@ -5,6 +5,8 @@ use async_trait::async_trait;
 use std::net::{Shutdown, SocketAddr, ToSocketAddrs};
 use std::str::from_utf8;
 
+pub mod socks5;
+
 pub enum Destination {
     Address(SocketAddr),
     DomainName(Vec<u8>, u16),
