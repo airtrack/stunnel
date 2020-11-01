@@ -1,9 +1,5 @@
 #[macro_use]
 extern crate log;
-extern crate async_std;
-extern crate getopts;
-extern crate stunnel;
-extern crate tide;
 
 use std::env;
 use std::sync::Arc;
