@@ -1,5 +1,7 @@
+use crate::proxy::{Destination, Proxy};
 use async_std::net::TcpStream;
 use async_std::prelude::*;
+use async_trait::async_trait;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
 const VER: u8 = 5;
@@ -16,13 +18,28 @@ const ATYP_IPV6: u8 = 4;
 const REP_SUCCESS: u8 = 0;
 const REP_FAILURE: u8 = 1;
 
-pub enum Destination {
-    Address(SocketAddr),
-    DomainName(Vec<u8>, u16),
-    Unknown,
+pub struct Socks5;
+
+#[async_trait]
+impl Proxy for Socks5 {
+    async fn handshake(&self, stream: &mut TcpStream) -> std::io::Result<Destination> {
+        handshake(stream).await
+    }
+
+    async fn destination_unreached(&self, stream: &mut TcpStream) -> std::io::Result<()> {
+        destination_unreached(stream).await
+    }
+
+    async fn destination_connected(
+        &self,
+        stream: &mut TcpStream,
+        bind_addr: SocketAddr,
+    ) -> std::io::Result<()> {
+        destination_connected(stream, bind_addr).await
+    }
 }
 
-pub async fn handshake(stream: &mut TcpStream) -> std::io::Result<Destination> {
+async fn handshake(stream: &mut TcpStream) -> std::io::Result<Destination> {
     let mut buf = [0u8; 2];
     stream.read_exact(&mut buf).await?;
 
@@ -80,12 +97,12 @@ pub async fn handshake(stream: &mut TcpStream) -> std::io::Result<Destination> {
     Ok(destination)
 }
 
-pub async fn destination_unreached(stream: &mut TcpStream) -> std::io::Result<()> {
+async fn destination_unreached(stream: &mut TcpStream) -> std::io::Result<()> {
     let bind_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
     destination_result(stream, bind_addr, REP_FAILURE).await
 }
 
-pub async fn destination_connected(
+async fn destination_connected(
     stream: &mut TcpStream,
     bind_addr: SocketAddr,
 ) -> std::io::Result<()> {

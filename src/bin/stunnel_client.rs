@@ -6,14 +6,10 @@ extern crate stunnel;
 extern crate tide;
 
 use std::env;
-use std::net::Shutdown;
-use std::net::ToSocketAddrs;
-use std::str::from_utf8;
 use std::sync::Arc;
 use std::vec::Vec;
 
 use async_std::net::TcpListener;
-use async_std::net::TcpStream;
 use async_std::prelude::*;
 use async_std::task;
 
@@ -22,110 +18,11 @@ use tide::Request;
 use stunnel::client::*;
 use stunnel::cryptor::Cryptor;
 use stunnel::logger;
+use stunnel::proxy::Proxy;
 use stunnel::socks5;
 use stunnel::ucp::UcpStreamMetrics;
 
-async fn process_read(stream: &mut &TcpStream, mut write_port: TunnelWritePort) {
-    loop {
-        let mut buf = vec![0; 1024];
-        match stream.read(&mut buf).await {
-            Ok(0) => {
-                let _ = stream.shutdown(Shutdown::Read);
-                write_port.shutdown_write().await;
-                write_port.drop().await;
-                break;
-            }
-
-            Ok(n) => {
-                buf.truncate(n);
-                write_port.write(buf).await;
-            }
-
-            Err(_) => {
-                let _ = stream.shutdown(Shutdown::Both);
-                write_port.close().await;
-                break;
-            }
-        }
-    }
-}
-
-async fn process_write(stream: &mut &TcpStream, mut read_port: TunnelReadPort) {
-    loop {
-        let buf = match read_port.read().await {
-            TunnelPortMsg::Data(buf) => buf,
-
-            TunnelPortMsg::ShutdownWrite => {
-                let _ = stream.shutdown(Shutdown::Write);
-                read_port.drain();
-                read_port.drop().await;
-                break;
-            }
-
-            _ => {
-                let _ = stream.shutdown(Shutdown::Both);
-                read_port.drain();
-                read_port.close().await;
-                break;
-            }
-        };
-
-        if stream.write_all(&buf).await.is_err() {
-            let _ = stream.shutdown(Shutdown::Both);
-            read_port.drain();
-            read_port.close().await;
-            break;
-        }
-    }
-}
-
-async fn run_tunnel_port(
-    mut stream: TcpStream,
-    mut read_port: TunnelReadPort,
-    mut write_port: TunnelWritePort,
-) {
-    match socks5::handshake(&mut stream).await {
-        Ok(socks5::Destination::Address(addr)) => {
-            let mut buf = Vec::new();
-            let _ = std::io::Write::write_fmt(&mut buf, format_args!("{}", addr));
-            write_port.connect(buf).await;
-        }
-
-        Ok(socks5::Destination::DomainName(domain_name, port)) => {
-            write_port.connect_domain_name(domain_name, port).await;
-        }
-
-        _ => {
-            return write_port.close().await;
-        }
-    }
-
-    let addr = match read_port.read().await {
-        TunnelPortMsg::ConnectOk(buf) => from_utf8(&buf).unwrap().to_socket_addrs().unwrap().nth(0),
-
-        _ => None,
-    };
-
-    let success = match addr {
-        Some(addr) => socks5::destination_connected(&mut stream, addr)
-            .await
-            .is_ok(),
-        None => socks5::destination_unreached(&mut stream).await.is_ok() && false,
-    };
-
-    if success {
-        let (reader, writer) = &mut (&stream, &stream);
-        let r = process_read(reader, write_port);
-        let w = process_write(writer, read_port);
-        let _ = r.join(w).await;
-    } else {
-        let _ = stream.shutdown(Shutdown::Both);
-        read_port.drain();
-        write_port.close().await;
-    }
-}
-
-async fn run_tunnels(mut tunnels: Vec<Tunnel>, listen_addr: String) {
+async fn run_proxy_tunnels(mut tunnels: Vec<Tunnel>, listen_addr: String) {
     let mut index = 0;
     let listener = TcpListener::bind(listen_addr).await.unwrap();
     let mut incoming = listener.incoming();
@@ -136,8 +33,9 @@ async fn run_tunnels(mut tunnels: Vec<Tunnel>, listen_addr: String) {
                 {
                     let tunnel: &mut Tunnel = tunnels.get_mut(index).unwrap();
                     let (write_port, read_port) = tunnel.open_port().await;
+                    let proxy = socks5::Socks5;
                     task::spawn(async move {
-                        run_tunnel_port(stream, read_port, write_port).await;
+                        proxy.run_proxy_tunnel(stream, read_port, write_port).await;
                     });
                 }
 
@@ -235,7 +133,7 @@ fn main() {
             }
         }
 
-        let t = run_tunnels(tunnels, listen_addr);
+        let t = run_proxy_tunnels(tunnels, listen_addr);
         let h = run_http_server(app, http_addr);
         t.join(h).await;
     });
