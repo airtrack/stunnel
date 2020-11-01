@@ -28,9 +28,11 @@ Usage
 -----
 
 	./stunnel_server -l listen-address -k key [--log log-path] [--http http-address]
-	./stunnel_client -s server-address -k key [-c tunnel-count] [-l listen-address] [--log log-path] [--http http-address] [--enable-ucp]
+	./stunnel_client -s server-address -k key [-c tcp-tunnel-count] [--socks5-proxy socks5-proxy-address] [--http-proxy http-proxy-address] [--http http-address] [--log log-path] [--enable-ucp]
 
-Browser connect client listen address(`127.0.0.1:1080`) through SOCKS5.
+Browser connect client address(`127.0.0.1:1080`) through SOCKS5 or connect client address(`127.0.0.1:8888`) through HTTP.
+
+`--enable-ucp` option on client side to enable UCP tunnel instead of TCP tunnel, UCP tunnel is much faster than TCP tunnel in most cases.
 
 UCP
 ---
