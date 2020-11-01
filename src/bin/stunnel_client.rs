@@ -5,7 +5,7 @@ use std::env;
 use std::sync::Arc;
 use std::vec::Vec;
 
-use async_std::net::TcpListener;
+use async_std::net::{SocketAddr, TcpListener};
 use async_std::prelude::*;
 use async_std::task;
 
@@ -14,28 +14,45 @@ use tide::Request;
 use stunnel::client::*;
 use stunnel::cryptor::Cryptor;
 use stunnel::logger;
-use stunnel::proxy::{socks5, Proxy};
+use stunnel::proxy::{http, socks5, Proxy};
 use stunnel::ucp::UcpStreamMetrics;
 
-async fn run_proxy_tunnels(mut tunnels: Vec<Tunnel>, listen_addr: String) {
+async fn run_proxy_tunnels(
+    mut tunnels: Vec<Tunnel>,
+    socks5_addr: SocketAddr,
+    http_addr: SocketAddr,
+) {
     let mut index = 0;
-    let listener = TcpListener::bind(listen_addr).await.unwrap();
-    let mut incoming = listener.incoming();
+    let socks5_listener = TcpListener::bind(socks5_addr).await.unwrap();
+    let http_listener = TcpListener::bind(http_addr).await.unwrap();
+    let socks5_incoming = socks5_listener.incoming();
+    let http_incoming = http_listener.incoming();
+    let mut incoming = socks5_incoming.merge(http_incoming);
 
     while let Some(stream) = incoming.next().await {
         match stream {
-            Ok(stream) => {
-                {
+            Ok(stream) => match stream.local_addr() {
+                Ok(addr) => {
                     let tunnel: &mut Tunnel = tunnels.get_mut(index).unwrap();
                     let (write_port, read_port) = tunnel.open_port().await;
-                    let proxy = socks5::Socks5;
-                    task::spawn(async move {
-                        proxy.run_proxy_tunnel(stream, read_port, write_port).await;
-                    });
+
+                    if addr.port() == http_addr.port() {
+                        let proxy = http::Http;
+                        task::spawn(async move {
+                            proxy.run_proxy_tunnel(stream, read_port, write_port).await;
+                        });
+                    } else {
+                        let proxy = socks5::Socks5;
+                        task::spawn(async move {
+                            proxy.run_proxy_tunnel(stream, read_port, write_port).await;
+                        });
+                    }
+
+                    index = (index + 1) % tunnels.len();
                 }
 
-                index = (index + 1) % tunnels.len();
-            }
+                Err(_) => {}
+            },
 
             Err(_) => {}
         }
@@ -73,10 +90,16 @@ fn main() {
     let mut opts = getopts::Options::new();
     opts.reqopt("s", "server", "server address", "server-address");
     opts.reqopt("k", "key", "secret key", "key");
-    opts.optopt("c", "tunnel-count", "tunnel count", "tunnel-count");
-    opts.optopt("l", "listen", "listen address", "listen-address");
-    opts.optopt("", "log", "log path", "log-path");
+    opts.optopt(
+        "c",
+        "tcp-tunnel-count",
+        "tcp tunnel count",
+        "tcp-tunnel-count",
+    );
+    opts.optopt("", "socks5", "socks5 address", "socks5-address");
     opts.optopt("", "http", "http address", "http-address");
+    opts.optopt("", "status", "status address", "status-address");
+    opts.optopt("", "log", "log path", "log-path");
     opts.optflag("", "enable-ucp", "enable ucp");
 
     let matches = match opts.parse(&args[1..]) {
@@ -92,11 +115,14 @@ fn main() {
     let key = matches.opt_str("k").unwrap().into_bytes();
     let log_path = matches.opt_str("log").unwrap_or(String::new());
     let enable_ucp = matches.opt_present("enable-ucp");
-    let listen_addr = matches
-        .opt_str("l")
+    let socks5_addr = matches
+        .opt_str("socks5")
         .unwrap_or(String::from("127.0.0.1:1080"));
     let http_addr = matches
         .opt_str("http")
+        .unwrap_or(String::from("127.0.0.1:8888"));
+    let status_addr = matches
+        .opt_str("status")
         .unwrap_or(String::from("127.0.0.1:8080"));
     let (min, max) = Cryptor::key_size_range();
 
@@ -128,8 +154,10 @@ fn main() {
             }
         }
 
-        let t = run_proxy_tunnels(tunnels, listen_addr);
-        let h = run_http_server(app, http_addr);
+        let socks5_addr = socks5_addr.parse().unwrap();
+        let http_addr = http_addr.parse().unwrap();
+        let t = run_proxy_tunnels(tunnels, socks5_addr, http_addr);
+        let h = run_http_server(app, status_addr);
         t.join(h).await;
     });
 }
