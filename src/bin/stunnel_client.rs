@@ -96,9 +96,19 @@ fn main() {
         "tcp tunnel count",
         "tcp-tunnel-count",
     );
-    opts.optopt("", "socks5", "socks5 address", "socks5-address");
-    opts.optopt("", "http", "http address", "http-address");
-    opts.optopt("", "status", "status address", "status-address");
+    opts.optopt(
+        "",
+        "socks5-proxy",
+        "socks5 proxy listen address",
+        "socks5-proxy-address",
+    );
+    opts.optopt(
+        "",
+        "http-proxy",
+        "http proxy listen address",
+        "http-proxy-address",
+    );
+    opts.optopt("", "http", "http listen address", "http-address");
     opts.optopt("", "log", "log path", "log-path");
     opts.optflag("", "enable-ucp", "enable ucp");
 
@@ -115,14 +125,14 @@ fn main() {
     let key = matches.opt_str("k").unwrap().into_bytes();
     let log_path = matches.opt_str("log").unwrap_or(String::new());
     let enable_ucp = matches.opt_present("enable-ucp");
-    let socks5_addr = matches
-        .opt_str("socks5")
+    let socks5_proxy_addr = matches
+        .opt_str("socks5-proxy")
         .unwrap_or(String::from("127.0.0.1:1080"));
+    let http_proxy_addr = matches
+        .opt_str("http-proxy")
+        .unwrap_or(String::from("127.0.0.1:8888"));
     let http_addr = matches
         .opt_str("http")
-        .unwrap_or(String::from("127.0.0.1:8888"));
-    let status_addr = matches
-        .opt_str("status")
         .unwrap_or(String::from("127.0.0.1:8080"));
     let (min, max) = Cryptor::key_size_range();
 
@@ -154,10 +164,10 @@ fn main() {
             }
         }
 
-        let socks5_addr = socks5_addr.parse().unwrap();
-        let http_addr = http_addr.parse().unwrap();
-        let t = run_proxy_tunnels(tunnels, socks5_addr, http_addr);
-        let h = run_http_server(app, status_addr);
+        let socks5_proxy_addr = socks5_proxy_addr.parse().unwrap();
+        let http_proxy_addr = http_proxy_addr.parse().unwrap();
+        let t = run_proxy_tunnels(tunnels, socks5_proxy_addr, http_proxy_addr);
+        let h = run_http_server(app, http_addr);
         t.join(h).await;
     });
 }
