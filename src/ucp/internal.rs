@@ -1,220 +1,20 @@
-use async_std::io::{self, Read, Write};
 use async_std::net::UdpSocket;
-use async_std::sync::RwLock;
-use async_std::task;
-use crc::crc32;
+
 use crossbeam_utils::Backoff;
 use rand::random;
+
 use std::cell::Cell;
 use std::cmp::min;
-use std::collections::{HashMap, VecDeque};
 use std::io::{Error, ErrorKind};
 use std::net::SocketAddr;
-use std::pin::Pin;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use std::vec::Vec;
 
-const CMD_SYN: u8 = 128;
-const CMD_SYN_ACK: u8 = 129;
-const CMD_ACK: u8 = 130;
-const CMD_DATA: u8 = 131;
-const CMD_HEARTBEAT: u8 = 132;
-const CMD_HEARTBEAT_ACK: u8 = 133;
-const UCP_PACKET_META_SIZE: usize = 29;
-const DEFAULT_WINDOW: u32 = 512;
-const DEFAULT_RTO: u32 = 100;
-const HEARTBEAT_INTERVAL_MILLIS: u128 = 2500;
-const UCP_STREAM_BROKEN_MILLIS: u128 = 20000;
-const SKIP_RESEND_TIMES: u32 = 2;
-
-#[derive(Clone)]
-struct UcpPacket {
-    buf: [u8; 1400],
-    size: usize,
-    payload: u16,
-    read_pos: usize,
-    skip_times: u32,
-
-    session_id: u32,
-    timestamp: u32,
-    window: u32,
-    xmit: u32,
-    una: u32,
-    seq: u32,
-    cmd: u8,
-}
-
-impl UcpPacket {
-    fn new() -> UcpPacket {
-        UcpPacket {
-            buf: [0; 1400],
-            size: 0,
-            payload: 0,
-            read_pos: 0,
-            skip_times: 0,
-            session_id: 0,
-            timestamp: 0,
-            window: 0,
-            xmit: 0,
-            una: 0,
-            seq: 0,
-            cmd: 0,
-        }
-    }
-
-    fn parse(&mut self) -> bool {
-        if !self.is_legal() {
-            return false;
-        }
-
-        self.payload = (self.size - UCP_PACKET_META_SIZE) as u16;
-        self.read_pos = UCP_PACKET_META_SIZE;
-
-        let mut offset = 4;
-        self.session_id = self.parse_u32(&mut offset);
-        self.timestamp = self.parse_u32(&mut offset);
-        self.window = self.parse_u32(&mut offset);
-        self.xmit = self.parse_u32(&mut offset);
-        self.una = self.parse_u32(&mut offset);
-        self.seq = self.parse_u32(&mut offset);
-        self.cmd = self.parse_u8(&mut offset);
-
-        self.cmd >= CMD_SYN && self.cmd <= CMD_HEARTBEAT_ACK
-    }
-
-    fn pack(&mut self) {
-        let mut offset = 4;
-        let session_id = self.session_id;
-        let timestamp = self.timestamp;
-        let window = self.window;
-        let xmit = self.xmit;
-        let una = self.una;
-        let seq = self.seq;
-        let cmd = self.cmd;
-
-        self.write_u32(&mut offset, session_id);
-        self.write_u32(&mut offset, timestamp);
-        self.write_u32(&mut offset, window);
-        self.write_u32(&mut offset, xmit);
-        self.write_u32(&mut offset, una);
-        self.write_u32(&mut offset, seq);
-        self.write_u8(&mut offset, cmd);
-
-        offset = 0;
-        self.size = self.payload as usize + UCP_PACKET_META_SIZE;
-
-        let digest = crc32::checksum_ieee(&self.buf[4..self.size]);
-        self.write_u32(&mut offset, digest);
-    }
-
-    fn packed_buffer(&self) -> &[u8] {
-        &self.buf[..self.size]
-    }
-
-    fn parse_u32(&self, offset: &mut isize) -> u32 {
-        let u = unsafe { *(self.buf.as_ptr().offset(*offset) as *const u32) };
-
-        *offset += 4;
-        u32::from_be(u)
-    }
-
-    fn parse_u8(&self, offset: &mut isize) -> u8 {
-        let u = self.buf[*offset as usize];
-        *offset += 1;
-        u
-    }
-
-    fn write_u32(&mut self, offset: &mut isize, u: u32) {
-        unsafe {
-            *(self.buf.as_ptr().offset(*offset) as *mut u32) = u.to_be();
-        }
-
-        *offset += 4;
-    }
-
-    fn write_u8(&mut self, offset: &mut isize, u: u8) {
-        self.buf[*offset as usize] = u;
-        *offset += 1;
-    }
-
-    fn is_legal(&self) -> bool {
-        self.size >= UCP_PACKET_META_SIZE && self.is_crc32_correct()
-    }
-
-    fn is_crc32_correct(&self) -> bool {
-        let mut offset = 0;
-        let digest = self.parse_u32(&mut offset);
-        crc32::checksum_ieee(&self.buf[4..self.size]) == digest
-    }
-
-    fn is_syn(&self) -> bool {
-        self.cmd == CMD_SYN
-    }
-
-    fn remaining_load(&self) -> usize {
-        self.buf.len() - self.payload as usize - UCP_PACKET_META_SIZE
-    }
-
-    fn payload_offset(&self) -> isize {
-        (self.payload as usize + UCP_PACKET_META_SIZE) as isize
-    }
-
-    fn payload_write_u32(&mut self, u: u32) -> bool {
-        if self.remaining_load() >= 4 {
-            let mut offset = self.payload_offset();
-            self.write_u32(&mut offset, u);
-            self.payload += 4;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn payload_write_slice(&mut self, buf: &[u8]) -> bool {
-        if self.remaining_load() >= buf.len() {
-            let offset = self.payload_offset() as usize;
-            let end = offset + buf.len();
-            self.buf[offset..end].copy_from_slice(buf);
-            self.payload += buf.len() as u16;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn payload_remaining(&self) -> usize {
-        self.size - self.read_pos
-    }
-
-    fn payload_read_u32(&mut self) -> u32 {
-        if self.read_pos + 4 > self.size {
-            panic!("Out of range when read u32 from {}", self.read_pos);
-        }
-
-        let mut offset = self.read_pos as isize;
-        let u = self.parse_u32(&mut offset);
-        self.read_pos = offset as usize;
-        u
-    }
-
-    fn payload_read_slice(&mut self, buf: &mut [u8]) -> usize {
-        let size = min(self.payload_remaining(), buf.len());
-        let end_pos = self.read_pos + size;
-
-        if size > 0 {
-            buf[0..size].copy_from_slice(&self.buf[self.read_pos..end_pos]);
-            self.read_pos = end_pos;
-        }
-
-        size
-    }
-}
-
-type UcpPacketQueue = VecDeque<Box<UcpPacket>>;
+use crate::ucp::packet::*;
+use crate::ucp::*;
 
 pub struct UcpStreamMetrics {
     send_queue: AtomicUsize,
@@ -282,11 +82,11 @@ enum UcpState {
     ESTABLISHED,
 }
 
-struct InnerStream {
+pub(super) struct InnerStream {
+    pub(super) socket: Arc<UdpSocket>,
     lock: AtomicUsize,
     alive: AtomicBool,
     metrics: Arc<UcpStreamMetrics>,
-    socket: Arc<UdpSocket>,
     remote_addr: SocketAddr,
     initial_time: Instant,
     alive_time: Cell<Instant>,
@@ -326,16 +126,16 @@ impl Drop for Lock<'_> {
 }
 
 impl InnerStream {
-    fn new(
+    pub(super) fn new(
         socket: Arc<UdpSocket>,
         remote_addr: SocketAddr,
         metrics: Arc<UcpStreamMetrics>,
     ) -> Self {
         InnerStream {
+            socket: socket,
             lock: AtomicUsize::new(0),
             alive: AtomicBool::new(true),
             metrics: metrics,
-            socket: socket,
             remote_addr: remote_addr,
             initial_time: Instant::now(),
             alive_time: Cell::new(Instant::now()),
@@ -361,7 +161,7 @@ impl InnerStream {
         }
     }
 
-    async fn input(&self, packet: Box<UcpPacket>, remote_addr: SocketAddr) {
+    pub(super) async fn input(&self, packet: Box<UcpPacket>, remote_addr: SocketAddr) {
         if self.remote_addr != remote_addr {
             error!(
                 "unexpect packet from {}, expect from {}",
@@ -387,7 +187,7 @@ impl InnerStream {
         }
     }
 
-    async fn output(&self) {
+    pub(super) async fn output(&self) {
         let _l = self.lock();
 
         if self.check_if_alive() {
@@ -402,7 +202,11 @@ impl InnerStream {
         self.update_metrics();
     }
 
-    fn poll_read(&self, cx: &mut Context, buf: &mut [u8]) -> Poll<std::io::Result<usize>> {
+    pub(super) fn poll_read(
+        &self,
+        cx: &mut Context,
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
         let _l = self.lock();
 
         if !self.alive() {
@@ -418,7 +222,7 @@ impl InnerStream {
         }
     }
 
-    fn poll_write(&self, cx: &mut Context, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+    pub(super) fn poll_write(&self, cx: &mut Context, buf: &[u8]) -> Poll<std::io::Result<usize>> {
         let _l = self.lock();
 
         if !self.alive() {
@@ -434,7 +238,7 @@ impl InnerStream {
         }
     }
 
-    fn shutdown(&self) {
+    pub(super) fn shutdown(&self) {
         info!(
             "shutdown {}, session: {}",
             self.remote_addr,
@@ -444,7 +248,7 @@ impl InnerStream {
         self.die();
     }
 
-    fn alive(&self) -> bool {
+    pub(super) fn alive(&self) -> bool {
         self.alive.load(Ordering::Relaxed)
     }
 
@@ -695,7 +499,7 @@ impl InnerStream {
         self.try_wake_writer();
     }
 
-    fn connecting(&self) {
+    pub(super) fn connecting(&self) {
         self.state.set(UcpState::CONNECTING);
         self.session_id.set(random::<u32>());
 
@@ -1011,225 +815,5 @@ impl InnerStream {
             .socket
             .send_to(packet.packed_buffer(), self.remote_addr)
             .await;
-    }
-}
-
-pub struct UcpStream {
-    inner: Arc<InnerStream>,
-}
-
-impl UcpStream {
-    pub async fn connect(server_addr: &str, metrics: Arc<UcpStreamMetrics>) -> Self {
-        let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
-        let remote_addr = SocketAddr::from_str(server_addr).unwrap();
-
-        let inner = Arc::new(InnerStream::new(socket, remote_addr, metrics));
-        inner.connecting();
-
-        let sender = inner.clone();
-        task::spawn(async move {
-            UcpStream::send(sender).await;
-        });
-
-        let receiver = inner.clone();
-        task::spawn(async move {
-            UcpStream::recv(receiver).await;
-        });
-
-        UcpStream { inner: inner }
-    }
-
-    pub fn shutdown(&self) {
-        self.inner.shutdown();
-    }
-
-    async fn send(inner: Arc<InnerStream>) {
-        loop {
-            task::sleep(Duration::from_millis(10)).await;
-            inner.output().await;
-
-            if !inner.alive() {
-                break;
-            }
-        }
-    }
-
-    async fn recv(inner: Arc<InnerStream>) {
-        loop {
-            let mut packet = Box::new(UcpPacket::new());
-            let result = io::timeout(
-                Duration::from_secs(5),
-                inner.socket.recv_from(&mut packet.buf),
-            )
-            .await;
-
-            if !inner.alive() {
-                break;
-            }
-
-            if let Ok((size, remote_addr)) = result {
-                packet.size = size;
-
-                if packet.parse() {
-                    inner.input(packet, remote_addr).await;
-                } else {
-                    error!("recv illgal packet from {}", remote_addr);
-                }
-            }
-        }
-    }
-}
-
-impl Read for &UcpStream {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context,
-        buf: &mut [u8],
-    ) -> Poll<std::io::Result<usize>> {
-        self.inner.poll_read(cx, buf)
-    }
-}
-
-impl Write for &UcpStream {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context,
-        buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
-        self.inner.poll_write(cx, buf)
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<std::io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<std::io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-}
-
-type UcpStreamMap = HashMap<SocketAddr, Arc<InnerStream>>;
-type UcpStreamMetricsMap = HashMap<SocketAddr, Arc<UcpStreamMetrics>>;
-
-pub struct UcpListenerMetrics {
-    metrics_map: RwLock<UcpStreamMetricsMap>,
-}
-
-impl UcpListenerMetrics {
-    pub fn new() -> Self {
-        Self {
-            metrics_map: RwLock::new(UcpStreamMetricsMap::new()),
-        }
-    }
-
-    pub async fn get_metrics(&self) -> Vec<(SocketAddr, Arc<UcpStreamMetrics>)> {
-        let mut result = Vec::new();
-        let map = self.metrics_map.read().await;
-
-        for (addr, metrics) in map.iter() {
-            result.push((addr.clone(), metrics.clone()))
-        }
-
-        result
-    }
-
-    async fn insert(&self, addr: SocketAddr, metrics: Arc<UcpStreamMetrics>) {
-        let mut map = self.metrics_map.write().await;
-        map.insert(addr, metrics);
-    }
-
-    async fn remove(&self, addr: &SocketAddr) {
-        let mut map = self.metrics_map.write().await;
-        map.remove(addr);
-    }
-}
-
-pub struct UcpListener {
-    socket: Arc<UdpSocket>,
-    metrics: Arc<UcpListenerMetrics>,
-    stream_map: UcpStreamMap,
-    timestamp: Instant,
-}
-
-impl UcpListener {
-    pub async fn bind(listen_addr: &str, metrics: Arc<UcpListenerMetrics>) -> Self {
-        let socket = Arc::new(UdpSocket::bind(listen_addr).await.unwrap());
-        UcpListener {
-            socket: socket,
-            metrics: metrics,
-            stream_map: UcpStreamMap::new(),
-            timestamp: Instant::now(),
-        }
-    }
-
-    pub async fn incoming(&mut self) -> UcpStream {
-        loop {
-            let mut packet = Box::new(UcpPacket::new());
-            let result = io::timeout(
-                Duration::from_secs(1),
-                self.socket.recv_from(&mut packet.buf),
-            )
-            .await;
-
-            if let Ok((size, remote_addr)) = result {
-                packet.size = size;
-
-                if packet.parse() {
-                    if let Some(inner) = self.stream_map.get(&remote_addr) {
-                        inner.input(packet, remote_addr).await;
-                    } else if packet.is_syn() {
-                        return self.new_stream(packet, remote_addr).await;
-                    } else {
-                        error!("unknown ucp session packet from {}", remote_addr);
-                    }
-                } else {
-                    error!("recv illgal packet from {}", remote_addr);
-                }
-            }
-
-            self.remove_dead_stream().await;
-        }
-    }
-
-    async fn new_stream(&mut self, packet: Box<UcpPacket>, remote_addr: SocketAddr) -> UcpStream {
-        info!("new ucp client from {}", remote_addr);
-        let metrics = Arc::new(UcpStreamMetrics::new());
-        let inner = Arc::new(InnerStream::new(
-            self.socket.clone(),
-            remote_addr,
-            metrics.clone(),
-        ));
-        inner.input(packet, remote_addr).await;
-
-        let sender = inner.clone();
-        task::spawn(async move {
-            UcpStream::send(sender).await;
-        });
-
-        self.stream_map.insert(remote_addr, inner.clone());
-        self.metrics.insert(remote_addr, metrics).await;
-        UcpStream { inner: inner }
-    }
-
-    async fn remove_dead_stream(&mut self) {
-        let now = Instant::now();
-        if (now - self.timestamp).as_millis() < 1000 {
-            return;
-        }
-
-        let mut keys = Vec::new();
-
-        for (addr, stream) in self.stream_map.iter() {
-            if !stream.alive() {
-                keys.push(addr.clone());
-            }
-        }
-
-        for addr in keys.iter() {
-            self.stream_map.remove(addr);
-            self.metrics.remove(addr).await;
-        }
-
-        self.timestamp = now;
     }
 }
