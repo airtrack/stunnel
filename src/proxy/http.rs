@@ -14,7 +14,7 @@ impl Proxy for Http {
         let http_req = decode(stream.clone()).await;
 
         match http_req {
-            Ok(Some(request)) => {
+            Ok(Some((request, _))) => {
                 let method = request.method();
                 let url = request.url();
                 if method == Method::Connect
