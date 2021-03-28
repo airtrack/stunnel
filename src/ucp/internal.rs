@@ -104,6 +104,7 @@ pub(super) struct InnerStream {
     session_id: Cell<u32>,
     local_window: Cell<u32>,
     remote_window: Cell<u32>,
+    bandwidth: Cell<u32>,
     seq: Cell<u32>,
     una: Cell<u32>,
     rto: Cell<u32>,
@@ -153,6 +154,7 @@ impl InnerStream {
             session_id: Cell::new(0),
             local_window: Cell::new(DEFAULT_WINDOW),
             remote_window: Cell::new(DEFAULT_WINDOW),
+            bandwidth: Cell::new(BANDWIDTH),
             seq: Cell::new(0),
             una: Cell::new(0),
             rto: Cell::new(DEFAULT_RTO),
@@ -191,10 +193,11 @@ impl InnerStream {
         let _l = self.lock();
 
         if self.check_if_alive() {
+            let mut quota = (self.bandwidth.get() / 100) as i32;
             self.do_heartbeat().await;
             self.send_ack_list().await;
-            self.timeout_resend().await;
-            self.send_pending_packets().await;
+            self.timeout_resend(&mut quota).await;
+            self.send_pending_packets(&mut quota).await;
         } else {
             self.die();
         }
@@ -429,7 +432,7 @@ impl InnerStream {
         self.send_packet_directly(&mut packet).await;
     }
 
-    async fn timeout_resend(&self) {
+    async fn timeout_resend(&self, quota: &mut i32) {
         let now = self.timestamp();
         let una = self.una.get();
         let rto = self.rto.get();
@@ -439,8 +442,16 @@ impl InnerStream {
             let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
 
             for packet in send_queue.iter_mut() {
+                if *quota <= 0 {
+                    break
+                }
+
                 let interval = now - packet.timestamp;
-                let skip_resend = packet.skip_times >= SKIP_RESEND_TIMES;
+                let skip_resend = if packet.xmit >= 1 && packet.skip_times > 0 {
+                    true
+                } else {
+                    packet.skip_times >= SKIP_RESEND_TIMES
+                };
 
                 if interval >= rto || skip_resend {
                     packet.skip_times = 0;
@@ -450,6 +461,7 @@ impl InnerStream {
                     packet.xmit += 1;
 
                     resend.push(packet.clone());
+                    *quota -= packet.size() as i32;
                 }
             }
         }
@@ -459,27 +471,19 @@ impl InnerStream {
         }
     }
 
-    async fn send_pending_packets(&self) {
+    async fn send_pending_packets(&self, quota: &mut i32) {
         let now = self.timestamp();
         let una = self.una.get();
-        let window = self.remote_window.get() as usize;
         let mut pending = Vec::new();
 
         {
             let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
             let send_buffer = unsafe { &mut *self.send_buffer.as_ptr() };
 
-            while send_queue.len() < window {
-                if let Some(q) = send_queue.front() {
-                    if let Some(p) = send_buffer.front() {
-                        let seq_diff = (p.seq - q.seq) as usize;
-                        if seq_diff >= window {
-                            break;
-                        }
-                    }
-                }
-
+            while *quota > 0 {
                 if let Some(mut packet) = send_buffer.pop_front() {
+                    *quota -= packet.size() as i32;
+
                     packet.window = self.local_window.get();
                     packet.una = una;
                     packet.timestamp = now;

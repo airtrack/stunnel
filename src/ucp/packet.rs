@@ -38,6 +38,10 @@ impl UcpPacket {
         }
     }
 
+    pub(super) fn size(&self) -> usize {
+        self.payload as usize + UCP_PACKET_META_SIZE
+    }
+
     pub(super) fn parse(&mut self) -> bool {
         if !self.is_legal() {
             return false;
