@@ -37,4 +37,4 @@ Browser connect client address(`127.0.0.1:1080`) through SOCKS5 or connect clien
 UCP
 ---
 
-UCP is an ARQ protocol implementation, which is base on UDP and inspired by [KCP](https://github.com/skywind3000/kcp).
+UCP is an ARQ protocol implementation, which is based on UDP and inspired by [KCP](https://github.com/skywind3000/kcp).
