@@ -84,7 +84,7 @@ enum UcpState {
 
 pub(super) struct InnerStream {
     pub(super) socket: Arc<UdpSocket>,
-    lock: AtomicUsize,
+    lock: AtomicBool,
     alive: AtomicBool,
     metrics: Arc<UcpStreamMetrics>,
     remote_addr: SocketAddr,
@@ -134,7 +134,7 @@ impl InnerStream {
     ) -> Self {
         InnerStream {
             socket: socket,
-            lock: AtomicUsize::new(0),
+            lock: AtomicBool::new(false),
             alive: AtomicBool::new(true),
             metrics: metrics,
             remote_addr: remote_addr,
@@ -269,14 +269,18 @@ impl InnerStream {
 
     fn lock(&self) -> Lock<'_> {
         let backoff = Backoff::new();
-        while self.lock.compare_and_swap(0, 1, Ordering::Acquire) != 0 {
+        while self
+            .lock
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             backoff.snooze();
         }
         Lock { inner: self }
     }
 
     fn unlock(&self) {
-        self.lock.store(0, Ordering::SeqCst);
+        self.lock.store(false, Ordering::Release);
     }
 
     fn recv(&self, buf: &mut [u8]) -> usize {
@@ -443,7 +447,7 @@ impl InnerStream {
 
             for packet in send_queue.iter_mut() {
                 if *quota <= 0 {
-                    break
+                    break;
                 }
 
                 let interval = now - packet.timestamp;
