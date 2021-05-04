@@ -74,6 +74,97 @@ impl UcpStreamMetrics {
     }
 }
 
+struct SampleVariance {
+    samples: Vec<f32>,
+    next_pos: usize,
+}
+
+impl SampleVariance {
+    fn new(value: f32, count: usize) -> Self {
+        assert!(count > 1);
+        Self {
+            samples: vec![value; count],
+            next_pos: 0,
+        }
+    }
+
+    fn mean_value(&self) -> f32 {
+        self.samples.iter().sum::<f32>() / self.samples.len() as f32
+    }
+
+    fn standard_deviation(&self) -> f32 {
+        let mean_value = self.mean_value();
+        let sum = self
+            .samples
+            .iter()
+            .map(|x| (x - mean_value).powi(2))
+            .sum::<f32>();
+        let sv = sum / (self.samples.len() - 1) as f32;
+        sv.sqrt()
+    }
+
+    fn push(&mut self, value: f32) {
+        self.samples[self.next_pos] = value;
+        self.next_pos = (self.next_pos + 1) % self.samples.len();
+    }
+}
+
+struct CongestionControl {
+    srtt: Cell<u32>,
+    bandwidth: Cell<f32>,
+    period_num: Cell<f32>,
+    sample_time: Cell<Instant>,
+    period_num_sv: Cell<SampleVariance>,
+}
+
+impl CongestionControl {
+    fn new() -> Self {
+        Self {
+            srtt: Cell::new(0),
+            bandwidth: Cell::new(512.0 * 1024.0),
+            period_num: Cell::new(10.0),
+            sample_time: Cell::new(Instant::now()),
+            period_num_sv: Cell::new(SampleVariance::new(10.0, 10)),
+        }
+    }
+
+    fn bandwidth_per_sec(&self) -> u32 {
+        (self.bandwidth.get() * self.period_num.get()) as u32
+    }
+
+    fn update(&self, rtt: u32) {
+        self.update_srtt(rtt);
+        self.update_sample();
+    }
+
+    fn update_srtt(&self, rtt: u32) {
+        let mut srtt = self.srtt.get();
+        if srtt == 0 {
+            srtt = rtt
+        }
+
+        srtt = (srtt * 9 + rtt) / 10;
+        self.srtt.set(srtt);
+    }
+
+    fn update_sample(&self) {
+        let now = Instant::now();
+        if (now - self.sample_time.get()).as_millis() < 2000 {
+            return;
+        }
+
+        self.sample_time.set(now);
+
+        let srtt = self.srtt.get() as f32;
+        let new_period_num = 1000.0 / (srtt / 2.0);
+        let period_num_sv = unsafe { &mut *self.period_num_sv.as_ptr() };
+
+        period_num_sv.push(new_period_num);
+        self.period_num.set(period_num_sv.mean_value());
+        info!("congestion control bandwidth: {}", self.bandwidth_per_sec());
+    }
+}
+
 #[derive(Clone, Copy)]
 enum UcpState {
     NONE,
@@ -110,6 +201,8 @@ pub(super) struct InnerStream {
     rto: Cell<u32>,
     srtt: Cell<u32>,
     rttvar: Cell<u32>,
+
+    cc: CongestionControl,
 }
 
 unsafe impl Send for InnerStream {}
@@ -160,6 +253,8 @@ impl InnerStream {
             rto: Cell::new(DEFAULT_RTO),
             srtt: Cell::new(0),
             rttvar: Cell::new(0),
+
+            cc: CongestionControl::new(),
         }
     }
 
@@ -193,7 +288,9 @@ impl InnerStream {
         let _l = self.lock();
 
         if self.check_if_alive() {
-            let mut quota = (self.bandwidth.get() / 100) as i32;
+            let bandwidth = self.cc.bandwidth_per_sec();
+            let mut quota = (bandwidth / 100) as i32;
+
             self.do_heartbeat().await;
             self.send_ack_list().await;
             self.timeout_resend(&mut quota).await;
@@ -726,6 +823,7 @@ impl InnerStream {
     fn process_an_ack(&self, seq: u32, timestamp: u32) -> bool {
         let rtt = self.timestamp() - timestamp;
         self.update_rto(rtt);
+        self.cc.update(rtt);
 
         let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
         for i in 0..send_queue.len() {
