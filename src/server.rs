@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::net::Shutdown;
 use std::str::from_utf8;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
-use async_std::io::{Read, Write};
-use async_std::net::TcpStream;
+use async_std::io::{self, Read, Write};
+use async_std::net::{TcpStream, UdpSocket};
 use async_std::prelude::*;
 use async_std::task;
 
@@ -180,7 +181,7 @@ impl PortHub {
     }
 }
 
-async fn tunnel_port_write(stream: &mut &TcpStream, mut write_port: TunnelWritePort) {
+async fn tunnel_port_write_tcp(stream: &mut &TcpStream, mut write_port: TunnelWritePort) {
     loop {
         let mut buf = vec![0; 1024];
         match stream.read(&mut buf).await {
@@ -205,7 +206,7 @@ async fn tunnel_port_write(stream: &mut &TcpStream, mut write_port: TunnelWriteP
     }
 }
 
-async fn tunnel_port_read(stream: &mut &TcpStream, mut read_port: TunnelReadPort) {
+async fn tunnel_port_read_tcp(stream: &mut &TcpStream, mut read_port: TunnelReadPort) {
     loop {
         match read_port.read().await {
             TunnelPortMsg::Data(cs::DATA, buf) => {
@@ -234,8 +235,95 @@ async fn tunnel_port_read(stream: &mut &TcpStream, mut read_port: TunnelReadPort
     }
 }
 
-async fn tunnel_port_task(mut read_port: TunnelReadPort, mut write_port: TunnelWritePort) {
-    let stream = match read_port.read().await {
+async fn tunnel_port_task(mut read_port: TunnelReadPort, write_port: TunnelWritePort) {
+    let msg = read_port.read().await;
+    match msg {
+        TunnelPortMsg::Data(cs::UDP_ASSOCIATE, _) => {
+            tunnel_port_task_udp(msg, read_port, write_port).await
+        }
+        _ => tunnel_port_task_tcp(msg, read_port, write_port).await,
+    }
+}
+
+async fn tunnel_port_task_udp(
+    msg: TunnelPortMsg,
+    read_port: TunnelReadPort,
+    mut write_port: TunnelWritePort,
+) {
+    let socket = match UdpSocket::bind("0.0.0.0:0").await {
+        Ok(s) => s,
+        Err(_) => return write_port.close().await,
+    };
+
+    match msg {
+        TunnelPortMsg::Data(cs::UDP_ASSOCIATE, buf) => {
+            write_port.connect_ok(buf).await;
+        }
+        _ => return write_port.close().await,
+    }
+
+    let running = AtomicBool::new(true);
+    let w = tunnel_port_write_udp(&running, &socket, write_port);
+    let r = tunnel_port_read_udp(&running, &socket, read_port);
+    let _ = r.join(w).await;
+}
+
+async fn tunnel_port_write_udp(
+    running: &AtomicBool,
+    socket: &UdpSocket,
+    mut write_port: TunnelWritePort,
+) {
+    let udp_packer = UdpDataPacker;
+    let mut buf = [0; 1500];
+
+    loop {
+        if !running.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let result = io::timeout(Duration::from_millis(100), socket.recv_from(&mut buf)).await;
+        match result {
+            Ok((n, source)) => {
+                let data = udp_packer.pack_udp_data(&buf[0..n], &source);
+                write_port.write(data).await;
+            }
+
+            Err(_) => {}
+        }
+    }
+}
+
+async fn tunnel_port_read_udp(
+    running: &AtomicBool,
+    socket: &UdpSocket,
+    mut read_port: TunnelReadPort,
+) {
+    let mut udp_unpacker = UdpDataUnpacker::new();
+    loop {
+        match read_port.read().await {
+            TunnelPortMsg::Data(cs::DATA, buf) => {
+                udp_unpacker.append_data(buf);
+                if let Some((data, addr)) = udp_unpacker.unpack_udp_data() {
+                    let _ = socket.send_to(&data, addr).await;
+                }
+            }
+
+            _ => {
+                read_port.drain();
+                read_port.close().await;
+                running.store(false, Ordering::Relaxed);
+                break;
+            }
+        }
+    }
+}
+
+async fn tunnel_port_task_tcp(
+    msg: TunnelPortMsg,
+    read_port: TunnelReadPort,
+    mut write_port: TunnelWritePort,
+) {
+    let stream = match msg {
         TunnelPortMsg::Data(cs::CONNECT, buf) => {
             TcpStream::connect(from_utf8(&buf).unwrap()).await.ok()
         }
@@ -267,8 +355,8 @@ async fn tunnel_port_task(mut read_port: TunnelReadPort, mut write_port: TunnelW
     }
 
     let (reader, writer) = &mut (&stream, &stream);
-    let w = tunnel_port_write(reader, write_port);
-    let r = tunnel_port_read(writer, read_port);
+    let w = tunnel_port_write_tcp(reader, write_port);
+    let r = tunnel_port_read_tcp(writer, read_port);
     let _ = r.join(w).await;
 }
 

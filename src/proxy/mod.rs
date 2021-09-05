@@ -11,12 +11,13 @@ pub mod socks5;
 pub enum Destination {
     Address(SocketAddr),
     DomainName(Vec<u8>, u16),
+    UdpAssociate(SocketAddr),
     Unknown,
 }
 
 #[async_trait]
-pub trait Proxy {
-    async fn handshake(&self, stream: &mut TcpStream) -> std::io::Result<Destination>;
+pub trait Proxy: Sync {
+    async fn handshake(&mut self, stream: &mut TcpStream) -> std::io::Result<Destination>;
     async fn destination_unreached(&self, stream: &mut TcpStream) -> std::io::Result<()>;
     async fn destination_connected(
         &self,
@@ -24,8 +25,16 @@ pub trait Proxy {
         bind_addr: SocketAddr,
     ) -> std::io::Result<()>;
 
+    async fn proxy_tunnel_read(&self, stream: &mut &TcpStream, write_port: TunnelWritePort) {
+        proxy_tunnel_read(stream, write_port).await;
+    }
+
+    async fn proxy_tunnel_write(&self, stream: &mut &TcpStream, read_port: TunnelReadPort) {
+        proxy_tunnel_write(stream, read_port).await;
+    }
+
     async fn run_proxy_tunnel(
-        &self,
+        &mut self,
         mut stream: TcpStream,
         mut read_port: TunnelReadPort,
         mut write_port: TunnelWritePort,
@@ -39,6 +48,12 @@ pub trait Proxy {
 
             Ok(Destination::DomainName(domain_name, port)) => {
                 write_port.connect_domain_name(domain_name, port).await;
+            }
+
+            Ok(Destination::UdpAssociate(addr)) => {
+                let mut buf = Vec::new();
+                let _ = std::io::Write::write_fmt(&mut buf, format_args!("{}", addr));
+                write_port.udp_associate(buf).await;
             }
 
             _ => {
@@ -61,8 +76,8 @@ pub trait Proxy {
 
         if success {
             let (reader, writer) = &mut (&stream, &stream);
-            let r = proxy_tunnel_read(reader, write_port);
-            let w = proxy_tunnel_write(writer, read_port);
+            let r = self.proxy_tunnel_read(reader, write_port);
+            let w = self.proxy_tunnel_write(writer, read_port);
             let _ = r.join(w).await;
         } else {
             let _ = stream.shutdown(Shutdown::Both);

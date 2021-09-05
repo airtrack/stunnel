@@ -23,6 +23,7 @@ enum TunnelMsg {
     CSOpenPort(u32, Sender<TunnelPortMsg>),
     CSConnect(u32, Vec<u8>),
     CSConnectDN(u32, Vec<u8>, u16),
+    CSUdpAssociate(u32, Vec<u8>),
     CSShutdownWrite(u32),
     CSClosePort(u32),
     CSData(u32, Vec<u8>),
@@ -168,6 +169,10 @@ impl TunnelWritePort {
             .tx
             .send(TunnelMsg::CSConnectDN(self.id, buf, port))
             .await;
+    }
+
+    pub async fn udp_associate(&mut self, buf: Vec<u8>) {
+        let _ = self.tx.send(TunnelMsg::CSUdpAssociate(self.id, buf)).await;
     }
 
     pub async fn shutdown_write(&mut self) {
@@ -562,6 +567,11 @@ async fn process_tunnel_msg<W: Write + Unpin>(
             let data = encryptor.encrypt(&buf);
             let packed_buffer = pack_cs_connect_domain_msg(id, &data, port);
             stream.write_all(&packed_buffer).await?;
+        }
+
+        TunnelMsg::CSUdpAssociate(id, buf) => {
+            let data = encryptor.encrypt(&buf);
+            stream.write_all(&pack_udp_associate_msg(id, &data)).await?;
         }
 
         TunnelMsg::CSShutdownWrite(id) => {

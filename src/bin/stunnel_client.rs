@@ -37,12 +37,12 @@ async fn run_proxy_tunnels(
                     let (write_port, read_port) = tunnel.open_port().await;
 
                     if addr.port() == http_addr.port() {
-                        let proxy = http::Http;
+                        let mut proxy = http::Http;
                         task::spawn(async move {
                             proxy.run_proxy_tunnel(stream, read_port, write_port).await;
                         });
                     } else {
-                        let proxy = socks5::Socks5;
+                        let mut proxy = socks5::Socks5::new();
                         task::spawn(async move {
                             proxy.run_proxy_tunnel(stream, read_port, write_port).await;
                         });

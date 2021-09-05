@@ -51,6 +51,8 @@ mod util {
 }
 
 mod protocol {
+    use std::net::SocketAddr;
+    use std::str::from_utf8;
     use std::vec::Vec;
 
     pub const VERIFY_DATA: [u8; 8] = [0xF0u8, 0xEF, 0xE, 0x2, 0xAE, 0xBC, 0x8C, 0x78];
@@ -65,6 +67,7 @@ mod protocol {
         pub const CONNECT_DOMAIN_NAME: u8 = 6;
         pub const DATA: u8 = 7;
         pub const HEARTBEAT: u8 = 8;
+        pub const UDP_ASSOCIATE: u8 = 9;
     }
 
     pub mod sc {
@@ -126,6 +129,10 @@ mod protocol {
         buf
     }
 
+    pub fn pack_udp_associate_msg(id: u32, data: &[u8]) -> Vec<u8> {
+        pack_cmd_id_data_msg(cs::UDP_ASSOCIATE, id, data)
+    }
+
     pub fn pack_cs_shutdown_write_msg(id: u32) -> [u8; 5] {
         pack_cmd_id_msg(cs::SHUTDOWN_WRITE, id)
     }
@@ -162,5 +169,79 @@ mod protocol {
     pub fn pack_sc_heartbeat_rsp_msg() -> [u8; 1] {
         let buf = [sc::HEARTBEAT_RSP];
         buf
+    }
+
+    pub struct UdpDataPacker;
+
+    impl UdpDataPacker {
+        pub fn pack_udp_data(&self, data: &[u8], addr: &SocketAddr) -> Vec<u8> {
+            let mut addr_buf = Vec::new();
+            let _ = std::io::Write::write_fmt(&mut addr_buf, format_args!("{}", addr));
+
+            let mut buf = vec![0; 4 + data.len()];
+            let len = (data.len() + addr_buf.len()) as u16;
+            let data_len = data.len() as u16;
+
+            unsafe {
+                *(buf.as_ptr() as *mut u16) = len.to_be();
+                *(buf.as_ptr().offset(2) as *mut u16) = data_len.to_be();
+            }
+
+            buf[4..].copy_from_slice(data);
+            buf.append(&mut addr_buf);
+
+            buf
+        }
+    }
+
+    pub struct UdpDataUnpacker {
+        buffer: Vec<u8>,
+    }
+
+    impl UdpDataUnpacker {
+        pub fn new() -> Self {
+            Self { buffer: Vec::new() }
+        }
+
+        pub fn append_data(&mut self, mut buf: Vec<u8>) {
+            self.buffer.append(&mut buf)
+        }
+
+        pub fn unpack_udp_data(&mut self) -> Option<(Vec<u8>, SocketAddr)> {
+            let (len, _) = self.unpack_udp_data_length(&self.buffer)?;
+            let total_len = 4 + len;
+
+            if self.buffer.len() < total_len {
+                return None;
+            }
+
+            let udp_data = self.do_unpack_udp_data(&self.buffer);
+            self.buffer.drain(0..total_len);
+            Some(udp_data)
+        }
+
+        fn unpack_udp_data_length(&self, buf: &[u8]) -> Option<(usize, usize)> {
+            if buf.len() < 4 {
+                return None;
+            }
+
+            let len = u16::from_be(unsafe { *(buf.as_ptr() as *const u16) }) as usize;
+            let data_len =
+                u16::from_be(unsafe { *(buf.as_ptr().offset(2) as *const u16) }) as usize;
+            Some((len, data_len))
+        }
+
+        fn do_unpack_udp_data(&self, buf: &[u8]) -> (Vec<u8>, SocketAddr) {
+            let (len, data_len) = self.unpack_udp_data_length(buf).unwrap();
+
+            let mut data = vec![0; data_len];
+            data.copy_from_slice(&buf[4..4 + data_len]);
+
+            let addr = from_utf8(&buf[4 + data_len..4 + len])
+                .unwrap()
+                .parse()
+                .unwrap();
+            (data, addr)
+        }
     }
 }

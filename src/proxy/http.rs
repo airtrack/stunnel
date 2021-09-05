@@ -10,7 +10,7 @@ pub struct Http;
 
 #[async_trait]
 impl Proxy for Http {
-    async fn handshake(&self, stream: &mut TcpStream) -> std::io::Result<Destination> {
+    async fn handshake(&mut self, stream: &mut TcpStream) -> std::io::Result<Destination> {
         let http_req = decode(stream.clone()).await;
 
         match http_req {
