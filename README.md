@@ -1,7 +1,7 @@
 STunnel
 =======
 
-Simple SOCKS5/HTTP tunnel. SOCKS5 on client side only provide NO AUTHENTICATION TCP method.
+Simple SOCKS5/HTTP tunnel. SOCKS5 on client side provides NO AUTHENTICATION TCP/UDP proxy.
 
 	            .                      |                     .
 	            .                      f                     .
