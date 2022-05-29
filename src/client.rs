@@ -214,8 +214,7 @@ impl TunnelReadPort {
 }
 
 struct Port {
-    host: String,
-    port: u16,
+    address: String,
     count: u32,
     tx: Sender<TunnelPortMsg>,
 }
@@ -235,18 +234,16 @@ impl PortHub {
         self.1.insert(
             id,
             Port {
-                host: String::new(),
-                port: 0,
+                address: String::new(),
                 count: 2,
                 tx: tx,
             },
         );
     }
 
-    fn update_port(&mut self, id: u32, host: String, port: u16) {
+    fn update_address(&mut self, id: u32, address: String) {
         if let Some(value) = self.1.get_mut(&id) {
-            value.host = host;
-            value.port = port;
+            value.address = address;
         }
     }
 
@@ -256,10 +253,7 @@ impl PortHub {
         if let Some(value) = self.1.get_mut(&id) {
             value.count = value.count - 1;
             if value.count == 0 {
-                info!(
-                    "{}.{}: drop tunnel port {}:{}",
-                    self_id, id, value.host, value.port
-                );
+                info!("{}.{}: drop tunnel port {}", self_id, id, value.address);
                 self.1.remove(&id);
             }
         } else {
@@ -274,13 +268,7 @@ impl PortHub {
     fn client_close_port(&mut self, id: u32) {
         match self.1.get(&id) {
             Some(value) => {
-                info!(
-                    "{}.{}: client close {}:{}",
-                    self.get_id(),
-                    id,
-                    value.host,
-                    value.port
-                );
+                info!("{}.{}: client close {}", self.get_id(), id, value.address);
                 self.1.remove(&id);
             }
 
@@ -293,13 +281,7 @@ impl PortHub {
     fn server_close_port(&mut self, id: u32) {
         match self.1.get(&id) {
             Some(value) => {
-                info!(
-                    "{}.{}: server close {}:{}",
-                    self.get_id(),
-                    id,
-                    value.host,
-                    value.port
-                );
+                info!("{}.{}: server close {}", self.get_id(), id, value.address);
                 self.1.remove(&id);
             }
 
@@ -313,20 +295,15 @@ impl PortHub {
         match self.1.get(&id) {
             Some(value) => {
                 info!(
-                    "{}.{}: client shutdown write {}:{}",
+                    "{}.{}: client shutdown {}",
                     self.get_id(),
                     id,
-                    value.host,
-                    value.port
+                    value.address
                 );
             }
 
             None => {
-                info!(
-                    "{}.{}: client shutdown write unknown server",
-                    self.get_id(),
-                    id
-                );
+                info!("{}.{}: client shutdown unknown server", self.get_id(), id);
             }
         }
     }
@@ -335,11 +312,10 @@ impl PortHub {
         match self.1.get(&id) {
             Some(value) => {
                 info!(
-                    "{}.{}: server shutdown write {}:{}",
+                    "{}.{}: server shutdown write {}",
                     self.get_id(),
                     id,
-                    value.host,
-                    value.port
+                    value.address
                 );
                 self.try_send_msg(id, TunnelPortMsg::ShutdownWrite).await;
             }
@@ -357,13 +333,7 @@ impl PortHub {
     async fn connect_ok(&mut self, id: u32, buf: Vec<u8>) {
         match self.1.get(&id) {
             Some(value) => {
-                info!(
-                    "{}.{}: connect {}:{} ok",
-                    self.get_id(),
-                    id,
-                    value.host,
-                    value.port
-                );
+                info!("{}.{}: connect {} ok", self.get_id(), id, value.address);
                 self.try_send_msg(id, TunnelPortMsg::ConnectOk(buf)).await;
             }
 
@@ -381,12 +351,15 @@ impl PortHub {
         let self_id = self.get_id();
 
         if let Some(value) = self.1.get_mut(&id) {
-            if value.tx.send(msg).await.is_err() {
-                error!(
-                    "{}.{}: send msg to the channel of {}:{} occur error",
-                    self_id, id, value.host, value.port
-                );
-                self.1.remove(&id);
+            match value.tx.send(msg).await {
+                Ok(_) => {}
+                Err(err) => {
+                    error!(
+                        "{}.{}: send msg to the channel of {} error: {}",
+                        self_id, id, value.address, err
+                    );
+                    self.1.remove(&id);
+                }
             }
         }
     }
@@ -420,7 +393,7 @@ async fn tcp_tunnel_core_task<S: Stream<Item = TunnelMsg> + Unpin>(
     };
     let _ = r.join(w).await;
 
-    info!("Tcp tunnel {} broken", tid);
+    info!("TCP tunnel {} broken", tid);
     port_hub.clear_ports();
 }
 
@@ -446,7 +419,7 @@ async fn ucp_tunnel_core_task<S: Stream<Item = TunnelMsg> + Unpin>(
     };
     let _ = r.join(w).await;
 
-    info!("Ucp tunnel {} broken", tid);
+    info!("UCP tunnel {} broken", tid);
     port_hub.clear_ports();
 }
 
@@ -500,7 +473,10 @@ async fn process_tunnel_read<R: Read + Unpin>(
                 }
             }
 
-            _ => break,
+            _ => {
+                error!("Tunnel recv unknow operation: {}, id: {}", op, id);
+                break;
+            }
         }
     }
 
@@ -522,8 +498,10 @@ async fn process_tunnel_write<W: Write + Unpin, S: Stream<Item = TunnelMsg> + Un
     loop {
         match msg_stream.next().await {
             Some(TunnelMsg::Heartbeat) => {
-                let duration = Instant::now() - alive_time;
+                let now = Instant::now();
+                let duration = now - alive_time;
                 if duration.as_millis() > ALIVE_TIMEOUT_TIME_MS {
+                    error!("Tunnel heartbeat timeout: {:?} - {:?}", alive_time, now);
                     break;
                 }
 
@@ -534,7 +512,10 @@ async fn process_tunnel_write<W: Write + Unpin, S: Stream<Item = TunnelMsg> + Un
                 process_tunnel_msg(msg, &mut alive_time, port_hub, &mut encryptor, stream).await?;
             }
 
-            None => break,
+            None => {
+                error!("Tunnel get none from message stream");
+                break;
+            }
         }
     }
 
@@ -550,19 +531,27 @@ async fn process_tunnel_msg<W: Write + Unpin>(
 ) -> std::io::Result<()> {
     match msg {
         TunnelMsg::CSOpenPort(id, tx) => {
+            info!("{}.{}: open port", port_hub.get_id(), id);
             port_hub.add_port(id, tx);
             stream.write_all(&pack_cs_open_port_msg(id)).await?;
         }
 
         TunnelMsg::CSConnect(id, buf) => {
+            let address = String::from_utf8(buf.clone()).unwrap_or(String::new());
+            info!("{}.{}: connecting {}", port_hub.get_id(), id, address);
+
+            port_hub.update_address(id, address);
+
             let data = encryptor.encrypt(&buf);
             stream.write_all(&pack_cs_connect_msg(id, &data)).await?;
         }
 
         TunnelMsg::CSConnectDN(id, buf, port) => {
             let host = String::from_utf8(buf.clone()).unwrap_or(String::new());
-            info!("{}.{}: connecting {}:{}", port_hub.get_id(), id, host, port);
-            port_hub.update_port(id, host, port);
+            let address = format!("{}:{}", host, port);
+            info!("{}.{}: connecting {}", port_hub.get_id(), id, address);
+
+            port_hub.update_address(id, address);
 
             let data = encryptor.encrypt(&buf);
             let packed_buffer = pack_cs_connect_domain_msg(id, &data, port);
@@ -570,21 +559,29 @@ async fn process_tunnel_msg<W: Write + Unpin>(
         }
 
         TunnelMsg::CSUdpAssociate(id, buf) => {
+            let address = String::from_utf8(buf.clone()).unwrap_or(String::new());
+            info!("{}.{}: udp associate {}", port_hub.get_id(), id, address);
+
+            port_hub.update_address(id, address);
+
             let data = encryptor.encrypt(&buf);
             stream.write_all(&pack_udp_associate_msg(id, &data)).await?;
         }
 
         TunnelMsg::CSShutdownWrite(id) => {
+            info!("{}.{}: shutdown write", port_hub.get_id(), id);
             port_hub.client_shutdown(id);
             stream.write_all(&pack_cs_shutdown_write_msg(id)).await?;
         }
 
         TunnelMsg::CSData(id, buf) => {
+            debug!("{}.{} send {} bytes", port_hub.get_id(), id, buf.len());
             let data = encryptor.encrypt(&buf);
             stream.write_all(&pack_cs_data_msg(id, &data)).await?;
         }
 
         TunnelMsg::CSClosePort(id) => {
+            info!("{}.{}: close port", port_hub.get_id(), id);
             port_hub.client_close_port(id);
             stream.write_all(&pack_cs_close_port_msg(id)).await?;
         }
@@ -594,30 +591,37 @@ async fn process_tunnel_msg<W: Write + Unpin>(
         }
 
         TunnelMsg::SCClosePort(id) => {
+            info!("{}.{}: server close port", port_hub.get_id(), id);
             *alive_time = Instant::now();
             port_hub.server_close_port(id);
         }
 
         TunnelMsg::SCShutdownWrite(id) => {
+            info!("{}.{}: server shutdown write", port_hub.get_id(), id);
             *alive_time = Instant::now();
             port_hub.server_shutdown(id).await;
         }
 
         TunnelMsg::SCConnectOk(id, buf) => {
+            info!("{}.{}: server connect ok", port_hub.get_id(), id);
             *alive_time = Instant::now();
             port_hub.connect_ok(id, buf).await;
         }
 
         TunnelMsg::SCData(id, buf) => {
+            debug!("{}.{}: recv {} bytes", port_hub.get_id(), id, buf.len());
             *alive_time = Instant::now();
             port_hub.server_send_data(id, buf).await;
         }
 
         TunnelMsg::TunnelPortHalfDrop(id) => {
+            info!("{}.{}: half drop port", port_hub.get_id(), id);
             port_hub.drop_port_half(id);
         }
 
-        _ => {}
+        _ => {
+            error!("{}: unknown message", port_hub.get_id());
+        }
     }
 
     Ok(())
