@@ -1,8 +1,10 @@
-pub use listener::{UcpListener, UcpListenerMetrics};
-pub use stream::{UcpStream, UcpStreamMetrics};
+pub use listener::UcpListener;
+pub use metrics::{CSVMetricsService, MetricsService};
+pub use stream::UcpStream;
 
 mod internal;
 mod listener;
+mod metrics;
 mod packet;
 mod stream;
 

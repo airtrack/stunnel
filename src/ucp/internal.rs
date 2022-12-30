@@ -7,7 +7,7 @@ use std::cell::Cell;
 use std::cmp::min;
 use std::io::{Error, ErrorKind};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use std::time::Instant;
@@ -15,64 +15,6 @@ use std::vec::Vec;
 
 use crate::ucp::packet::*;
 use crate::ucp::*;
-
-pub struct UcpStreamMetrics {
-    send_queue: AtomicUsize,
-    recv_queue: AtomicUsize,
-    send_buffer: AtomicUsize,
-    una: AtomicU32,
-    rto: AtomicU32,
-    srtt: AtomicU32,
-    rttvar: AtomicU32,
-    rx_seq: AtomicU32,
-}
-
-impl UcpStreamMetrics {
-    pub fn new() -> Self {
-        Self {
-            send_queue: AtomicUsize::new(0),
-            recv_queue: AtomicUsize::new(0),
-            send_buffer: AtomicUsize::new(0),
-            una: AtomicU32::new(0),
-            rto: AtomicU32::new(0),
-            srtt: AtomicU32::new(0),
-            rttvar: AtomicU32::new(0),
-            rx_seq: AtomicU32::new(0),
-        }
-    }
-
-    pub fn get_send_queue(&self) -> usize {
-        self.send_queue.load(Ordering::Relaxed)
-    }
-
-    pub fn get_recv_queue(&self) -> usize {
-        self.recv_queue.load(Ordering::Relaxed)
-    }
-
-    pub fn get_send_buffer(&self) -> usize {
-        self.send_buffer.load(Ordering::Relaxed)
-    }
-
-    pub fn get_una(&self) -> u32 {
-        self.una.load(Ordering::Relaxed)
-    }
-
-    pub fn get_rto(&self) -> u32 {
-        self.rto.load(Ordering::Relaxed)
-    }
-
-    pub fn get_srtt(&self) -> u32 {
-        self.srtt.load(Ordering::Relaxed)
-    }
-
-    pub fn get_rttvar(&self) -> u32 {
-        self.rttvar.load(Ordering::Relaxed)
-    }
-
-    pub fn get_rx_seq(&self) -> u32 {
-        self.rx_seq.load(Ordering::Relaxed)
-    }
-}
 
 #[derive(Clone, Copy)]
 enum UcpState {
@@ -86,7 +28,7 @@ pub(super) struct InnerStream {
     pub(super) socket: Arc<UdpSocket>,
     lock: AtomicBool,
     alive: AtomicBool,
-    metrics: Arc<UcpStreamMetrics>,
+    metrics_reporter: Box<dyn metrics::MetricsReporter>,
     remote_addr: SocketAddr,
     initial_time: Instant,
     alive_time: Cell<Instant>,
@@ -130,14 +72,14 @@ impl InnerStream {
     pub(super) fn new(
         socket: Arc<UdpSocket>,
         remote_addr: SocketAddr,
-        metrics: Arc<UcpStreamMetrics>,
+        metrics_reporter: Box<dyn metrics::MetricsReporter>,
     ) -> Self {
         InnerStream {
-            socket: socket,
+            socket,
             lock: AtomicBool::new(false),
             alive: AtomicBool::new(true),
-            metrics: metrics,
-            remote_addr: remote_addr,
+            metrics_reporter,
+            remote_addr,
             initial_time: Instant::now(),
             alive_time: Cell::new(Instant::now()),
             heartbeat: Cell::new(Instant::now()),
@@ -356,30 +298,24 @@ impl InnerStream {
         let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
         let recv_queue = unsafe { &mut *self.recv_queue.as_ptr() };
         let send_buffer = unsafe { &mut *self.send_buffer.as_ptr() };
-        let una = self.una.get();
-        let rto = self.rto.get();
-        let srtt = self.srtt.get();
-        let rttvar = self.rttvar.get();
         let rx_seq = if let Some(packet) = recv_queue.front() {
             packet.seq
         } else {
             0
         };
 
-        self.metrics
-            .send_queue
-            .store(send_queue.len(), Ordering::Relaxed);
-        self.metrics
-            .recv_queue
-            .store(recv_queue.len(), Ordering::Relaxed);
-        self.metrics
-            .send_buffer
-            .store(send_buffer.len(), Ordering::Relaxed);
-        self.metrics.una.store(una, Ordering::Relaxed);
-        self.metrics.rto.store(rto, Ordering::Relaxed);
-        self.metrics.srtt.store(srtt, Ordering::Relaxed);
-        self.metrics.rttvar.store(rttvar, Ordering::Relaxed);
-        self.metrics.rx_seq.store(rx_seq, Ordering::Relaxed);
+        let metrics = metrics::UcpMetrics {
+            send_queue_size: send_queue.len(),
+            recv_queue_size: recv_queue.len(),
+            send_buffer_size: send_buffer.len(),
+            una: self.una.get(),
+            rto: self.rto.get(),
+            srtt: self.srtt.get(),
+            rttvar: self.rttvar.get(),
+            rx_seq,
+        };
+
+        self.metrics_reporter.report_metrics(metrics);
     }
 
     fn is_send_buffer_overflow(&self) -> bool {

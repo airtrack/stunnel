@@ -10,20 +10,19 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use crate::ucp::internal::*;
+use crate::ucp::metrics::MetricsReporter;
 use crate::ucp::packet::*;
-
-pub use crate::ucp::internal::UcpStreamMetrics;
 
 pub struct UcpStream {
     pub(super) inner: Arc<InnerStream>,
 }
 
 impl UcpStream {
-    pub async fn connect(server_addr: &str, metrics: Arc<UcpStreamMetrics>) -> Self {
+    pub async fn connect(server_addr: &str, metrics_reporter: Box<dyn MetricsReporter>) -> Self {
         let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
         let remote_addr = SocketAddr::from_str(server_addr).unwrap();
 
-        let inner = Arc::new(InnerStream::new(socket, remote_addr, metrics));
+        let inner = Arc::new(InnerStream::new(socket, remote_addr, metrics_reporter));
         inner.connecting();
 
         let sender = inner.clone();
