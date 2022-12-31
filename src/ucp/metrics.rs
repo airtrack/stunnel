@@ -1,9 +1,15 @@
 use async_std::task;
 use async_std::{fs::File, fs::OpenOptions, io::Error, io::WriteExt};
+use chrono::prelude::*;
 use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use futures::StreamExt;
+use std::net::SocketAddr;
 
 pub struct UcpMetrics {
+    pub date_time: DateTime<Utc>,
+    pub session_id: u32,
+    pub remote_addr: SocketAddr,
+
     pub send_queue_size: usize,
     pub recv_queue_size: usize,
     pub send_buffer_size: usize,
@@ -21,7 +27,10 @@ impl UcpMetrics {
         let _ = std::io::Write::write_fmt(
             &mut data,
             format_args!(
-                "{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{}\n",
+                "date_time",
+                "session_id",
+                "remote_addr",
                 "send_queue_size",
                 "recv_queue_size",
                 "send_buffer_size",
@@ -40,7 +49,10 @@ impl UcpMetrics {
         let _ = std::io::Write::write_fmt(
             &mut data,
             format_args!(
-                "{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{}\n",
+                self.date_time.to_rfc3339_opts(SecondsFormat::Secs, true),
+                self.session_id,
+                self.remote_addr,
                 self.send_queue_size,
                 self.recv_queue_size,
                 self.send_buffer_size,
@@ -115,11 +127,11 @@ impl CSVMetricsWriter {
     }
 }
 
-pub struct CSVMetricsService {
+pub struct CsvMetricsService {
     sender: UnboundedSender<UcpMetrics>,
 }
 
-impl MetricsService for CSVMetricsService {
+impl MetricsService for CsvMetricsService {
     fn new_metrics_reporter(&self) -> Box<dyn MetricsReporter> {
         let sender = self.sender.clone();
         let csv_metrics_reporter = Box::new(CSVMetricsReporter { sender });
@@ -127,7 +139,7 @@ impl MetricsService for CSVMetricsService {
     }
 }
 
-impl CSVMetricsService {
+impl CsvMetricsService {
     pub fn new(path: String) -> Self {
         let (sender, receiver) = unbounded();
 

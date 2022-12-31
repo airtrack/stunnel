@@ -1,5 +1,5 @@
 pub use listener::UcpListener;
-pub use metrics::{CSVMetricsService, MetricsService};
+pub use metrics::{CsvMetricsService, MetricsService};
 pub use stream::UcpStream;
 
 mod internal;

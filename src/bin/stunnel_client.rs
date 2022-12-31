@@ -12,7 +12,7 @@ use stunnel::client::*;
 use stunnel::cryptor::Cryptor;
 use stunnel::logger;
 use stunnel::proxy::{http, socks5, Proxy};
-use stunnel::ucp::CSVMetricsService;
+use stunnel::ucp::CsvMetricsService;
 
 async fn run_proxy_tunnels(
     mut tunnels: Vec<Tunnel>,
@@ -124,7 +124,7 @@ fn main() {
         let mut tunnels = Vec::new();
 
         if enable_ucp {
-            let metrics = Box::new(CSVMetricsService::new(ucp_metrics_path));
+            let metrics = Box::new(CsvMetricsService::new(ucp_metrics_path));
             let tunnel = UcpTunnel::new(0, server_addr.clone(), key.clone(), metrics);
             tunnels.push(tunnel);
         } else {

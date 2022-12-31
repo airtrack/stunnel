@@ -1,5 +1,5 @@
 use async_std::net::UdpSocket;
-
+use chrono::prelude::*;
 use crossbeam_utils::Backoff;
 use rand::random;
 
@@ -31,6 +31,7 @@ pub(super) struct InnerStream {
     metrics_reporter: Box<dyn metrics::MetricsReporter>,
     remote_addr: SocketAddr,
     initial_time: Instant,
+    metrics_time: Cell<Instant>,
     alive_time: Cell<Instant>,
     heartbeat: Cell<Instant>,
     state: Cell<UcpState>,
@@ -81,6 +82,7 @@ impl InnerStream {
             metrics_reporter,
             remote_addr,
             initial_time: Instant::now(),
+            metrics_time: Cell::new(Instant::now()),
             alive_time: Cell::new(Instant::now()),
             heartbeat: Cell::new(Instant::now()),
             state: Cell::new(UcpState::NONE),
@@ -295,6 +297,11 @@ impl InnerStream {
     }
 
     fn update_metrics(&self) {
+        let now = Instant::now();
+        if (now - self.metrics_time.get()).as_millis() < 1000 {
+            return;
+        }
+
         let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
         let recv_queue = unsafe { &mut *self.recv_queue.as_ptr() };
         let send_buffer = unsafe { &mut *self.send_buffer.as_ptr() };
@@ -305,6 +312,9 @@ impl InnerStream {
         };
 
         let metrics = metrics::UcpMetrics {
+            date_time: Utc::now(),
+            session_id: self.session_id.get(),
+            remote_addr: self.remote_addr,
             send_queue_size: send_queue.len(),
             recv_queue_size: recv_queue.len(),
             send_buffer_size: send_buffer.len(),
@@ -316,6 +326,7 @@ impl InnerStream {
         };
 
         self.metrics_reporter.report_metrics(metrics);
+        self.metrics_time.set(now);
     }
 
     fn is_send_buffer_overflow(&self) -> bool {

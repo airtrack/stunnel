@@ -10,7 +10,7 @@ use async_std::task;
 use stunnel::cryptor::Cryptor;
 use stunnel::logger;
 use stunnel::server::*;
-use stunnel::ucp::{CSVMetricsService, UcpListener};
+use stunnel::ucp::{CsvMetricsService, UcpListener};
 
 async fn run_ucp_server(mut listener: UcpListener, key: Vec<u8>) {
     loop {
@@ -66,7 +66,7 @@ fn main() {
     info!("starting up");
 
     task::block_on(async move {
-        let metrics = Box::new(CSVMetricsService::new(ucp_metrics_path));
+        let metrics = Box::new(CsvMetricsService::new(ucp_metrics_path));
         let ucp_listener = UcpListener::bind(&listen_addr, metrics).await;
         let tcp_listener = TcpListener::bind(&listen_addr).await.unwrap();
 
