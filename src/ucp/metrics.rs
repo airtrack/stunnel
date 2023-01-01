@@ -75,22 +75,22 @@ pub trait MetricsService: Send + Sync {
     fn new_metrics_reporter(&self) -> Box<dyn MetricsReporter>;
 }
 
-struct CSVMetricsReporter {
+struct CsvMetricsReporter {
     sender: UnboundedSender<UcpMetrics>,
 }
 
-impl MetricsReporter for CSVMetricsReporter {
+impl MetricsReporter for CsvMetricsReporter {
     fn report_metrics(&self, metrics: UcpMetrics) {
         let _ = self.sender.unbounded_send(metrics);
     }
 }
 
-struct CSVMetricsWriter {
+struct CsvMetricsWriter {
     path: String,
     receiver: UnboundedReceiver<UcpMetrics>,
 }
 
-impl CSVMetricsWriter {
+impl CsvMetricsWriter {
     async fn run(&mut self) {
         let mut file = OpenOptions::new()
             .create(true)
@@ -134,7 +134,7 @@ pub struct CsvMetricsService {
 impl MetricsService for CsvMetricsService {
     fn new_metrics_reporter(&self) -> Box<dyn MetricsReporter> {
         let sender = self.sender.clone();
-        let csv_metrics_reporter = Box::new(CSVMetricsReporter { sender });
+        let csv_metrics_reporter = Box::new(CsvMetricsReporter { sender });
         csv_metrics_reporter
     }
 }
@@ -144,7 +144,7 @@ impl CsvMetricsService {
         let (sender, receiver) = unbounded();
 
         task::spawn(async move {
-            let mut csv_metrics_writer = CSVMetricsWriter { path, receiver };
+            let mut csv_metrics_writer = CsvMetricsWriter { path, receiver };
             csv_metrics_writer.run().await;
         });
 
