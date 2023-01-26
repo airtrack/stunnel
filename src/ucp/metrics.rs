@@ -14,6 +14,10 @@ pub struct UcpMetrics {
     pub recv_queue_size: usize,
     pub send_buffer_size: usize,
 
+    pub bandwidth: u32,
+    pub send_kbps: u32,
+    pub recv_kbps: u32,
+
     pub una: u32,
     pub rto: u32,
     pub srtt: u32,
@@ -29,13 +33,16 @@ impl UcpMetrics {
         let _ = std::io::Write::write_fmt(
             &mut data,
             format_args!(
-                "{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                 "date_time",
                 "session_id",
                 "remote_addr",
                 "send_queue_size",
                 "recv_queue_size",
                 "send_buffer_size",
+                "bandwidth",
+                "send_kbps",
+                "recv_kbps",
                 "una",
                 "rto",
                 "srtt",
@@ -52,13 +59,16 @@ impl UcpMetrics {
         let _ = std::io::Write::write_fmt(
             &mut data,
             format_args!(
-                "{},{},{},{},{},{},{},{},{},{},{},{:.2}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2}\n",
                 self.date_time.to_rfc3339_opts(SecondsFormat::Secs, true),
                 self.session_id,
                 self.remote_addr,
                 self.send_queue_size,
                 self.recv_queue_size,
                 self.send_buffer_size,
+                self.bandwidth,
+                self.send_kbps,
+                self.recv_kbps,
                 self.una,
                 self.rto,
                 self.srtt,

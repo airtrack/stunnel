@@ -49,6 +49,8 @@ pub(super) struct InnerStream {
     local_window: Cell<u32>,
     remote_window: Cell<u32>,
     bandwidth: Cell<u32>,
+    send_bps: Cell<u32>,
+    recv_bps: Cell<u32>,
     seq: Cell<u32>,
     una: Cell<u32>,
     rto: Cell<u32>,
@@ -105,6 +107,8 @@ impl InnerStream {
             local_window: Cell::new(DEFAULT_WINDOW),
             remote_window: Cell::new(DEFAULT_WINDOW),
             bandwidth: Cell::new(BANDWIDTH),
+            send_bps: Cell::new(0),
+            recv_bps: Cell::new(0),
             seq: Cell::new(0),
             una: Cell::new(0),
             rto: Cell::new(DEFAULT_RTO),
@@ -126,6 +130,10 @@ impl InnerStream {
         }
 
         let _l = self.lock();
+        {
+            let recv_bps = unsafe { &mut *self.recv_bps.as_ptr() };
+            *recv_bps += packet.size() as u32 * 8;
+        }
 
         let state = self.state.get();
         match state {
@@ -329,6 +337,9 @@ impl InnerStream {
             send_queue_size: send_queue.len(),
             recv_queue_size: recv_queue.len(),
             send_buffer_size: send_buffer.len(),
+            bandwidth: self.bandwidth.get() * 8 / 1000,
+            send_kbps: self.send_bps.get() / 1000,
+            recv_kbps: self.recv_bps.get() / 1000,
             una: self.una.get(),
             rto: self.rto.get(),
             srtt: self.srtt.get(),
@@ -337,6 +348,8 @@ impl InnerStream {
             delay_slope: self.delay_slope.get(),
         };
 
+        self.send_bps.set(0);
+        self.recv_bps.set(0);
         self.metrics_reporter.report_metrics(metrics);
         self.metrics_time.set(now);
     }
@@ -857,9 +870,14 @@ impl InnerStream {
 
     async fn send_packet_directly(&self, packet: &mut Box<UcpPacket>) {
         packet.pack();
-        let _ = self
+        let sent = self
             .socket
             .send_to(packet.packed_buffer(), self.remote_addr)
             .await;
+
+        if let Ok(bytes) = sent {
+            let send_bps = unsafe { &mut *self.send_bps.as_ptr() };
+            *send_bps += bytes as u32 * 8;
+        }
     }
 }
