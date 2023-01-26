@@ -31,6 +31,7 @@ pub(super) struct InnerStream {
     metrics_reporter: Box<dyn metrics::MetricsReporter>,
     remote_addr: SocketAddr,
     initial_time: Instant,
+    congestion_time: Cell<Instant>,
     metrics_time: Cell<Instant>,
     alive_time: Cell<Instant>,
     heartbeat: Cell<Instant>,
@@ -43,7 +44,7 @@ pub(super) struct InnerStream {
     read_waker: Cell<Option<Waker>>,
     write_waker: Cell<Option<Waker>>,
 
-    ack_list: Cell<Vec<(u32, u32)>>,
+    ack_list: Cell<Vec<(u32, u32, u32)>>,
     session_id: Cell<u32>,
     local_window: Cell<u32>,
     remote_window: Cell<u32>,
@@ -53,6 +54,10 @@ pub(super) struct InnerStream {
     rto: Cell<u32>,
     srtt: Cell<u32>,
     rttvar: Cell<u32>,
+
+    delay_slope: Cell<f64>,
+    delay_base_time: Cell<Option<(u32, u32)>>,
+    send_recv_time_list: Cell<Vec<(i32, i32)>>,
 }
 
 unsafe impl Send for InnerStream {}
@@ -82,6 +87,7 @@ impl InnerStream {
             metrics_reporter,
             remote_addr,
             initial_time: Instant::now(),
+            congestion_time: Cell::new(Instant::now()),
             metrics_time: Cell::new(Instant::now()),
             alive_time: Cell::new(Instant::now()),
             heartbeat: Cell::new(Instant::now()),
@@ -104,6 +110,9 @@ impl InnerStream {
             rto: Cell::new(DEFAULT_RTO),
             srtt: Cell::new(0),
             rttvar: Cell::new(0),
+            delay_slope: Cell::new(0f64),
+            delay_base_time: Cell::new(None),
+            send_recv_time_list: Cell::new(Vec::new()),
         }
     }
 
@@ -137,6 +146,8 @@ impl InnerStream {
         let _l = self.lock();
 
         if self.check_if_alive() {
+            self.update_delay_info();
+
             let mut quota = (self.bandwidth.get() / 100) as i32;
             self.do_heartbeat().await;
             self.send_ack_list().await;
@@ -302,9 +313,9 @@ impl InnerStream {
             return;
         }
 
-        let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
-        let recv_queue = unsafe { &mut *self.recv_queue.as_ptr() };
-        let send_buffer = unsafe { &mut *self.send_buffer.as_ptr() };
+        let send_queue = unsafe { &*self.send_queue.as_ptr() };
+        let recv_queue = unsafe { &*self.recv_queue.as_ptr() };
+        let send_buffer = unsafe { &*self.send_buffer.as_ptr() };
         let rx_seq = if let Some(packet) = recv_queue.front() {
             packet.seq
         } else {
@@ -323,6 +334,7 @@ impl InnerStream {
             srtt: self.srtt.get(),
             rttvar: self.rttvar.get(),
             rx_seq,
+            delay_slope: self.delay_slope.get(),
         };
 
         self.metrics_reporter.report_metrics(metrics);
@@ -370,14 +382,15 @@ impl InnerStream {
 
         let mut packet = self.new_noseq_packet(CMD_ACK);
 
-        for &(seq, timestamp) in ack_list.iter() {
-            if packet.remaining_load() < 8 {
+        for &(seq, timestamp, local_timestamp) in ack_list.iter() {
+            if packet.remaining_load() < 12 {
                 self.send_packet_directly(&mut packet).await;
                 packet = self.new_noseq_packet(CMD_ACK);
             }
 
             packet.payload_write_u32(seq);
             packet.payload_write_u32(timestamp);
+            packet.payload_write_u32(local_timestamp);
         }
 
         self.send_packet_directly(&mut packet).await;
@@ -476,6 +489,7 @@ impl InnerStream {
         let mut syn_ack = self.new_packet(CMD_SYN_ACK);
         syn_ack.payload_write_u32(packet.seq);
         syn_ack.payload_write_u32(packet.timestamp);
+        syn_ack.payload_write_u32(self.timestamp());
         self.send_packet(syn_ack);
         info!(
             "accepting ucp client {}, session: {}",
@@ -515,11 +529,12 @@ impl InnerStream {
     }
 
     fn process_state_accepting(&self, mut packet: Box<UcpPacket>) {
-        if packet.cmd == CMD_ACK && packet.payload == 8 {
+        if packet.cmd == CMD_ACK && packet.payload == 12 {
             let seq = packet.payload_read_u32();
             let timestamp = packet.payload_read_u32();
+            let remote_timestamp = packet.payload_read_u32();
 
-            if self.process_an_ack(seq, timestamp) {
+            if self.process_an_ack(seq, timestamp, remote_timestamp) {
                 self.state.set(UcpState::ESTABLISHED);
                 info!(
                     "{} established, session: {}",
@@ -582,18 +597,19 @@ impl InnerStream {
     }
 
     fn process_ack(&self, mut packet: Box<UcpPacket>) {
-        if packet.cmd == CMD_ACK && packet.payload % 8 == 0 {
+        if packet.cmd == CMD_ACK && packet.payload % 12 == 0 {
             while packet.payload_remaining() > 0 {
                 let seq = packet.payload_read_u32();
                 let timestamp = packet.payload_read_u32();
-                self.process_an_ack(seq, timestamp);
+                let remote_timestamp = packet.payload_read_u32();
+                self.process_an_ack(seq, timestamp, remote_timestamp);
             }
         }
     }
 
     fn process_data(&self, packet: Box<UcpPacket>) {
         let ack_list = unsafe { &mut *self.ack_list.as_ptr() };
-        ack_list.push((packet.seq, packet.timestamp));
+        ack_list.push((packet.seq, packet.timestamp, self.timestamp()));
         let una = self.una.get();
 
         let una_diff = (packet.seq - una) as i32;
@@ -630,18 +646,20 @@ impl InnerStream {
     }
 
     async fn process_syn_ack(&self, mut packet: Box<UcpPacket>) {
-        if packet.cmd == CMD_SYN_ACK && packet.payload == 8 {
+        if packet.cmd == CMD_SYN_ACK && packet.payload == 12 {
             let seq = packet.payload_read_u32();
             let timestamp = packet.payload_read_u32();
+            let remote_timestamp = packet.payload_read_u32();
 
             let mut ack = self.new_noseq_packet(CMD_ACK);
             ack.payload_write_u32(packet.seq);
             ack.payload_write_u32(packet.timestamp);
+            ack.payload_write_u32(self.timestamp());
             self.send_packet_directly(&mut ack).await;
 
             match self.state.get() {
                 UcpState::CONNECTING => {
-                    if self.process_an_ack(seq, timestamp) {
+                    if self.process_an_ack(seq, timestamp, remote_timestamp) {
                         self.state.set(UcpState::ESTABLISHED);
                         self.una.set(packet.seq + 1);
                         info!(
@@ -670,9 +688,10 @@ impl InnerStream {
         self.alive_time.set(Instant::now());
     }
 
-    fn process_an_ack(&self, seq: u32, timestamp: u32) -> bool {
+    fn process_an_ack(&self, seq: u32, timestamp: u32, remote_timestamp: u32) -> bool {
         let rtt = self.timestamp() - timestamp;
         self.update_rto(rtt);
+        self.add_send_recv_time(timestamp, remote_timestamp);
 
         let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
         for i in 0..send_queue.len() {
@@ -706,6 +725,78 @@ impl InnerStream {
         self.rto.set(rto);
         self.srtt.set(srtt);
         self.rttvar.set(rttvar);
+    }
+
+    fn add_send_recv_time(&self, send_time: u32, recv_time: u32) {
+        match self.delay_base_time.get() {
+            Some((send_base, recv_base)) => {
+                let x = (send_time - send_base) as i32;
+                let y = (recv_time - recv_base) as i32;
+                let send_recv_time_list = unsafe { &mut *self.send_recv_time_list.as_ptr() };
+                send_recv_time_list.push((x, y));
+            }
+
+            None => {
+                self.delay_base_time.set(Some((send_time, recv_time)));
+            }
+        }
+    }
+
+    fn update_delay_info(&self) {
+        let now = Instant::now();
+        if (now - self.congestion_time.get()).as_millis() < 1000 {
+            return;
+        }
+
+        let mut send_recv_time_list = self.send_recv_time_list.take();
+        if send_recv_time_list.is_empty() {
+            return;
+        }
+
+        send_recv_time_list.sort_by(|p1, p2| {
+            if p1.0 != p2.0 {
+                p1.0.cmp(&p2.0)
+            } else {
+                p1.1.cmp(&p2.1)
+            }
+        });
+
+        let (mut sum_x, mut sum_y) = (0i64, 0i64);
+        let _: Vec<_> = send_recv_time_list
+            .iter()
+            .map(|p| {
+                sum_x += p.0 as i64;
+                sum_y += p.1 as i64;
+            })
+            .collect();
+
+        let len = send_recv_time_list.len() as i64;
+        let (mean_x, mean_y) = (sum_x / len, sum_y / len);
+
+        let s: Vec<_> = send_recv_time_list
+            .iter()
+            .map(|p| {
+                let x = p.0 as i64;
+                let y = p.1 as i64;
+                ((x - mean_x) * (y - mean_y), (x - mean_x) * (x - mean_x))
+            })
+            .collect();
+
+        let (mut sum_xy, mut sum_xx) = (0i64, 0i64);
+        let _: Vec<_> = s
+            .iter()
+            .map(|(xy, xx)| {
+                sum_xy += xy;
+                sum_xx += xx;
+            })
+            .collect();
+
+        if sum_xx != 0 {
+            let slope = sum_xy as f64 / sum_xx as f64;
+            self.delay_slope.set(slope);
+        }
+
+        self.congestion_time.set(now);
     }
 
     fn new_packet(&self, cmd: u8) -> Box<UcpPacket> {

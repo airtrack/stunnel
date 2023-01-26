@@ -19,6 +19,8 @@ pub struct UcpMetrics {
     pub srtt: u32,
     pub rttvar: u32,
     pub rx_seq: u32,
+
+    pub delay_slope: f64,
 }
 
 impl UcpMetrics {
@@ -27,7 +29,7 @@ impl UcpMetrics {
         let _ = std::io::Write::write_fmt(
             &mut data,
             format_args!(
-                "{},{},{},{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{}\n",
                 "date_time",
                 "session_id",
                 "remote_addr",
@@ -38,7 +40,8 @@ impl UcpMetrics {
                 "rto",
                 "srtt",
                 "rttvar",
-                "rx_seq"
+                "rx_seq",
+                "delay_slope"
             ),
         );
         data
@@ -49,7 +52,7 @@ impl UcpMetrics {
         let _ = std::io::Write::write_fmt(
             &mut data,
             format_args!(
-                "{},{},{},{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{:.2}\n",
                 self.date_time.to_rfc3339_opts(SecondsFormat::Secs, true),
                 self.session_id,
                 self.remote_addr,
@@ -60,7 +63,8 @@ impl UcpMetrics {
                 self.rto,
                 self.srtt,
                 self.rttvar,
-                self.rx_seq
+                self.rx_seq,
+                self.delay_slope,
             ),
         );
         data
