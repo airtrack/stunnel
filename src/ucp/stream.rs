@@ -12,6 +12,7 @@ use std::time::Duration;
 use crate::ucp::internal::*;
 use crate::ucp::metrics::MetricsReporter;
 use crate::ucp::packet::*;
+use crate::ucp::*;
 
 pub struct UcpStream {
     pub(super) inner: Arc<InnerStream>,
@@ -44,7 +45,7 @@ impl UcpStream {
 
     pub(super) async fn send(inner: Arc<InnerStream>) {
         loop {
-            task::sleep(Duration::from_millis(10)).await;
+            task::sleep(PACING_INTERVAL).await;
             inner.output().await;
 
             if !inner.alive() {

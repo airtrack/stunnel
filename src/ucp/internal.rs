@@ -33,6 +33,7 @@ pub(super) struct InnerStream {
     initial_time: Instant,
     congestion_time: Cell<Instant>,
     metrics_time: Cell<Instant>,
+    pacing_time: Cell<Instant>,
     alive_time: Cell<Instant>,
     heartbeat: Cell<Instant>,
     state: Cell<UcpState>,
@@ -82,17 +83,19 @@ impl InnerStream {
         remote_addr: SocketAddr,
         metrics_reporter: Box<dyn metrics::MetricsReporter>,
     ) -> Self {
+        let now = Instant::now();
         InnerStream {
             socket,
             lock: AtomicBool::new(false),
             alive: AtomicBool::new(true),
             metrics_reporter,
             remote_addr,
-            initial_time: Instant::now(),
-            congestion_time: Cell::new(Instant::now()),
-            metrics_time: Cell::new(Instant::now()),
-            alive_time: Cell::new(Instant::now()),
-            heartbeat: Cell::new(Instant::now()),
+            initial_time: now,
+            congestion_time: Cell::new(now),
+            metrics_time: Cell::new(now),
+            pacing_time: Cell::new(now),
+            alive_time: Cell::new(now),
+            heartbeat: Cell::new(now),
             state: Cell::new(UcpState::NONE),
 
             send_queue: Cell::new(UcpPacketQueue::new()),
@@ -152,20 +155,21 @@ impl InnerStream {
 
     pub(super) async fn output(&self) {
         let _l = self.lock();
+        let now = Instant::now();
 
-        if self.check_if_alive() {
-            self.update_delay_info();
+        if self.check_if_alive(now) {
+            self.update_delay_info(now);
 
-            let mut quota = (self.bandwidth.get() / 100) as i32;
-            self.do_heartbeat().await;
-            self.send_ack_list().await;
+            let mut quota = self.calculate_quota(now);
+            self.do_heartbeat(now).await;
+            self.send_ack_list(&mut quota).await;
             self.timeout_resend(&mut quota).await;
             self.send_pending_packets(&mut quota).await;
         } else {
             self.die();
         }
 
-        self.update_metrics();
+        self.update_metrics(now);
     }
 
     pub(super) fn poll_read(
@@ -315,9 +319,8 @@ impl InnerStream {
         }
     }
 
-    fn update_metrics(&self) {
-        let now = Instant::now();
-        if (now - self.metrics_time.get()).as_millis() < 1000 {
+    fn update_metrics(&self, now: Instant) {
+        if now - self.metrics_time.get() < METRICS_INTERVAL {
             return;
         }
 
@@ -360,10 +363,8 @@ impl InnerStream {
         send_buffer.len() >= remote_window as usize
     }
 
-    fn check_if_alive(&self) -> bool {
-        let now = Instant::now();
-        let interval = (now - self.alive_time.get()).as_millis();
-        let alive = interval < UCP_STREAM_BROKEN_MILLIS;
+    fn check_if_alive(&self, now: Instant) -> bool {
+        let alive = now - self.alive_time.get() < STREAM_BROKEN_DURATION;
 
         if !alive {
             error!(
@@ -376,18 +377,21 @@ impl InnerStream {
         alive
     }
 
-    async fn do_heartbeat(&self) {
-        let now = Instant::now();
-        let interval = (now - self.heartbeat.get()).as_millis();
+    fn calculate_quota(&self, now: Instant) -> i32 {
+        let duration = (now - self.pacing_time.get()).as_micros() as f32;
+        self.pacing_time.set(now);
+        ((self.bandwidth.get() as f32 / 1000000f32) * duration) as i32
+    }
 
-        if interval >= HEARTBEAT_INTERVAL_MILLIS {
+    async fn do_heartbeat(&self, now: Instant) {
+        if now - self.heartbeat.get() >= HEARTBEAT_INTERVAL {
             let mut heartbeat = self.new_noseq_packet(CMD_HEARTBEAT);
             self.send_packet_directly(&mut heartbeat).await;
             self.heartbeat.set(now);
         }
     }
 
-    async fn send_ack_list(&self) {
+    async fn send_ack_list(&self, quota: &mut i32) {
         let ack_list = self.ack_list.take();
         if ack_list.is_empty() {
             return;
@@ -397,6 +401,7 @@ impl InnerStream {
 
         for &(seq, timestamp, local_timestamp) in ack_list.iter() {
             if packet.remaining_load() < 12 {
+                *quota -= packet.size() as i32;
                 self.send_packet_directly(&mut packet).await;
                 packet = self.new_noseq_packet(CMD_ACK);
             }
@@ -406,6 +411,7 @@ impl InnerStream {
             packet.payload_write_u32(local_timestamp);
         }
 
+        *quota -= packet.size() as i32;
         self.send_packet_directly(&mut packet).await;
     }
 
@@ -755,9 +761,8 @@ impl InnerStream {
         }
     }
 
-    fn update_delay_info(&self) {
-        let now = Instant::now();
-        if (now - self.congestion_time.get()).as_millis() < 1000 {
+    fn update_delay_info(&self, now: Instant) {
+        if now - self.congestion_time.get() < CONGESTION_INTERVAL {
             return;
         }
 

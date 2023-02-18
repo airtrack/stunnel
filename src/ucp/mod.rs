@@ -2,6 +2,8 @@ pub use listener::UcpListener;
 pub use metrics::{CsvMetricsService, MetricsService};
 pub use stream::UcpStream;
 
+use std::time::Duration;
+
 mod internal;
 mod listener;
 mod metrics;
@@ -17,7 +19,11 @@ const CMD_HEARTBEAT_ACK: u8 = 133;
 const UCP_PACKET_META_SIZE: usize = 29;
 const DEFAULT_WINDOW: u32 = 512;
 const DEFAULT_RTO: u32 = 100;
-const HEARTBEAT_INTERVAL_MILLIS: u128 = 2500;
-const UCP_STREAM_BROKEN_MILLIS: u128 = 20000;
 const SKIP_RESEND_TIMES: u32 = 2;
 const BANDWIDTH: u32 = 3 * 1024 * 1024;
+
+const STREAM_BROKEN_DURATION: Duration = Duration::from_millis(20000);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(2500);
+const METRICS_INTERVAL: Duration = Duration::from_millis(1000);
+const CONGESTION_INTERVAL: Duration = Duration::from_millis(1000);
+const PACING_INTERVAL: Duration = Duration::from_micros(1000);
