@@ -52,6 +52,7 @@ pub(super) struct InnerStream {
     bandwidth: Cell<u32>,
     send_bps: Cell<u32>,
     recv_bps: Cell<u32>,
+    skip_resend_bps: Cell<u32>,
     seq: Cell<u32>,
     una: Cell<u32>,
     rto: Cell<u32>,
@@ -112,6 +113,7 @@ impl InnerStream {
             bandwidth: Cell::new(BANDWIDTH),
             send_bps: Cell::new(0),
             recv_bps: Cell::new(0),
+            skip_resend_bps: Cell::new(0),
             seq: Cell::new(0),
             una: Cell::new(0),
             rto: Cell::new(DEFAULT_RTO),
@@ -343,6 +345,7 @@ impl InnerStream {
             bandwidth: self.bandwidth.get() * 8 / 1000,
             send_kbps: self.send_bps.get() / 1000,
             recv_kbps: self.recv_bps.get() / 1000,
+            skip_resend_kbps: self.skip_resend_bps.get() / 1000,
             una: self.una.get(),
             rto: self.rto.get(),
             srtt: self.srtt.get(),
@@ -353,6 +356,7 @@ impl InnerStream {
 
         self.send_bps.set(0);
         self.recv_bps.set(0);
+        self.skip_resend_bps.set(0);
         self.metrics_reporter.report_metrics(metrics);
         self.metrics_time.set(now);
     }
@@ -445,6 +449,11 @@ impl InnerStream {
 
                     resend.push(packet.clone());
                     *quota -= packet.size() as i32;
+
+                    if skip_resend && interval < rto {
+                        let skip_resend_bps = unsafe { &mut *self.skip_resend_bps.as_ptr() };
+                        *skip_resend_bps += packet.size() as u32 * 8;
+                    }
                 }
             }
         }

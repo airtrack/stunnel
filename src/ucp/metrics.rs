@@ -17,6 +17,7 @@ pub struct UcpMetrics {
     pub bandwidth: u32,
     pub send_kbps: u32,
     pub recv_kbps: u32,
+    pub skip_resend_kbps: u32,
 
     pub una: u32,
     pub rto: u32,
@@ -33,7 +34,7 @@ impl UcpMetrics {
         let _ = std::io::Write::write_fmt(
             &mut data,
             format_args!(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                 "date_time",
                 "session_id",
                 "remote_addr",
@@ -43,6 +44,7 @@ impl UcpMetrics {
                 "bandwidth",
                 "send_kbps",
                 "recv_kbps",
+                "skip_resend_kbps",
                 "una",
                 "rto",
                 "srtt",
@@ -59,7 +61,7 @@ impl UcpMetrics {
         let _ = std::io::Write::write_fmt(
             &mut data,
             format_args!(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2}\n",
                 self.date_time.to_rfc3339_opts(SecondsFormat::Secs, true),
                 self.session_id,
                 self.remote_addr,
@@ -69,6 +71,7 @@ impl UcpMetrics {
                 self.bandwidth,
                 self.send_kbps,
                 self.recv_kbps,
+                self.skip_resend_kbps,
                 self.una,
                 self.rto,
                 self.srtt,
