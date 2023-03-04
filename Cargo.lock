@@ -1356,7 +1356,7 @@ checksum = "213701ba3370744dcd1a12960caa4843b3d68b4d1c0a5d575e0d65b2ee9d16c0"
 
 [[package]]
 name = "stunnel"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-h1",
  "async-std",
@@ -1369,7 +1369,7 @@ dependencies = [
  "getopts",
  "http-types",
  "log",
- "rand 0.8.5",
+ "rand 0.3.23",
  "rust-crypto",
 ]
 
