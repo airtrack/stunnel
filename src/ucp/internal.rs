@@ -58,6 +58,7 @@ pub(super) struct InnerStream {
     rto: Cell<u32>,
     srtt: Cell<u32>,
     rttvar: Cell<u32>,
+    pacing_credit: Cell<i32>,
 
     delay_slope: Cell<f64>,
     delay_base_time: Cell<Option<(u32, u32)>>,
@@ -119,6 +120,7 @@ impl InnerStream {
             rto: Cell::new(DEFAULT_RTO),
             srtt: Cell::new(0),
             rttvar: Cell::new(0),
+            pacing_credit: Cell::new(0),
             delay_slope: Cell::new(0f64),
             delay_base_time: Cell::new(None),
             send_recv_time_list: Cell::new(Vec::new()),
@@ -162,11 +164,16 @@ impl InnerStream {
         if self.check_if_alive(now) {
             self.update_delay_info(now);
 
-            let mut quota = self.calculate_quota(now);
+            let (mut pacing_credit, new_credit) = self.calculate_pacing_credit(now);
             self.do_heartbeat(now).await;
-            self.send_ack_list(&mut quota).await;
-            self.timeout_resend(&mut quota).await;
-            self.send_pending_packets(&mut quota).await;
+            self.send_ack_list(&mut pacing_credit).await;
+            self.timeout_resend(&mut pacing_credit).await;
+            self.send_pending_packets(&mut pacing_credit).await;
+
+            if pacing_credit > new_credit {
+                pacing_credit = new_credit;
+            }
+            self.pacing_credit.set(pacing_credit);
         } else {
             self.die();
         }
@@ -381,10 +388,12 @@ impl InnerStream {
         alive
     }
 
-    fn calculate_quota(&self, now: Instant) -> i32 {
+    fn calculate_pacing_credit(&self, now: Instant) -> (i32, i32) {
         let duration = (now - self.pacing_time.get()).as_micros() as f32;
         self.pacing_time.set(now);
-        ((self.bandwidth.get() as f32 / 1000000f32) * duration) as i32
+
+        let new_credit = ((self.bandwidth.get() as f32 / 1000000f32) * duration) as i32;
+        (new_credit + self.pacing_credit.get(), new_credit)
     }
 
     async fn do_heartbeat(&self, now: Instant) {
@@ -395,7 +404,7 @@ impl InnerStream {
         }
     }
 
-    async fn send_ack_list(&self, quota: &mut i32) {
+    async fn send_ack_list(&self, pacing_credit: &mut i32) {
         let ack_list = self.ack_list.take();
         if ack_list.is_empty() {
             return;
@@ -405,7 +414,7 @@ impl InnerStream {
 
         for &(seq, timestamp, local_timestamp) in ack_list.iter() {
             if packet.remaining_load() < 12 {
-                *quota -= packet.size() as i32;
+                *pacing_credit -= packet.size() as i32;
                 self.send_packet_directly(&mut packet).await;
                 packet = self.new_noseq_packet(CMD_ACK);
             }
@@ -415,11 +424,11 @@ impl InnerStream {
             packet.payload_write_u32(local_timestamp);
         }
 
-        *quota -= packet.size() as i32;
+        *pacing_credit -= packet.size() as i32;
         self.send_packet_directly(&mut packet).await;
     }
 
-    async fn timeout_resend(&self, quota: &mut i32) {
+    async fn timeout_resend(&self, pacing_credit: &mut i32) {
         let now = self.timestamp();
         let una = self.una.get();
         let rto = self.rto.get();
@@ -429,7 +438,7 @@ impl InnerStream {
             let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
 
             for packet in send_queue.iter_mut() {
-                if *quota <= 0 {
+                if *pacing_credit <= 0 {
                     break;
                 }
 
@@ -448,7 +457,7 @@ impl InnerStream {
                     packet.xmit += 1;
 
                     resend.push(packet.clone());
-                    *quota -= packet.size() as i32;
+                    *pacing_credit -= packet.size() as i32;
 
                     if skip_resend && interval < rto {
                         let skip_resend_bps = unsafe { &mut *self.skip_resend_bps.as_ptr() };
@@ -463,7 +472,7 @@ impl InnerStream {
         }
     }
 
-    async fn send_pending_packets(&self, quota: &mut i32) {
+    async fn send_pending_packets(&self, pacing_credit: &mut i32) {
         let now = self.timestamp();
         let una = self.una.get();
         let mut pending = Vec::new();
@@ -472,9 +481,9 @@ impl InnerStream {
             let send_queue = unsafe { &mut *self.send_queue.as_ptr() };
             let send_buffer = unsafe { &mut *self.send_buffer.as_ptr() };
 
-            while *quota > 0 {
+            while *pacing_credit > 0 {
                 if let Some(mut packet) = send_buffer.pop_front() {
-                    *quota -= packet.size() as i32;
+                    *pacing_credit -= packet.size() as i32;
 
                     packet.window = self.local_window.get();
                     packet.una = una;
