@@ -1,9 +1,10 @@
 use async_std::task;
-use async_std::{fs::File, fs::OpenOptions, io::Error, io::WriteExt};
 use chrono::prelude::*;
 use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use futures::StreamExt;
 use std::net::SocketAddr;
+
+use crate::util::FileRotate;
 
 pub struct UcpMetrics {
     pub date_time: DateTime<Utc>,
@@ -109,24 +110,17 @@ struct CsvMetricsWriter {
 
 impl CsvMetricsWriter {
     async fn run(&mut self) {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&self.path)
-            .await;
-
-        match file {
-            Ok(ref mut f) => {
-                let _ = f.write_all(&UcpMetrics::csv_header_line()).await;
-            }
-            Err(_) => {}
-        }
-
+        let mut file = FileRotate::open(
+            self.path.clone(),
+            10 * 1024 * 1024,
+            2,
+            Some(UcpMetrics::csv_header_line()),
+        )
+        .await;
         self.loop_recv_write(&mut file).await;
     }
 
-    async fn loop_recv_write(&mut self, file: &mut Result<File, Error>) {
+    async fn loop_recv_write(&mut self, file: &mut FileRotate) {
         loop {
             let metrics = self.receiver.next().await;
             if metrics.is_none() {
@@ -134,12 +128,7 @@ impl CsvMetricsWriter {
             }
 
             let metrics = metrics.unwrap();
-            match file {
-                Ok(ref mut f) => {
-                    let _ = f.write_all(&metrics.to_csv_line()).await;
-                }
-                Err(_) => {}
-            }
+            file.write_all(&metrics.to_csv_line()).await;
         }
     }
 }
