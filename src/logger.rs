@@ -1,15 +1,16 @@
-use chrono::prelude::*;
-use log::{self, Level, LevelFilter, Metadata, Record, SetLoggerError};
-use std::collections::vec_deque::VecDeque;
-use std::fs::{remove_file, rename, OpenOptions};
 use std::io::Write;
-use std::sync::{Arc, Condvar, Mutex};
-use std::thread;
 use std::vec::Vec;
+
+use async_std::{stream::StreamExt, task};
+use chrono::prelude::*;
+use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
+use log::{self, Level, LevelFilter, Metadata, Record, SetLoggerError};
+
+use crate::util::FileRotate;
 
 struct ChannelLogger {
     level: Level,
-    msg_queue: Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>,
+    sender: UnboundedSender<Vec<u8>>,
 }
 
 impl log::Log for ChannelLogger {
@@ -19,11 +20,11 @@ impl log::Log for ChannelLogger {
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
-            let mut data = Vec::new();
+            let mut msg = Vec::new();
             let datetime = Local::now();
 
             let _ = write!(
-                &mut data,
+                &mut msg,
                 "[{}][{}][{}:{}] - {}\n",
                 datetime.format("%F %T%.6f").to_string(),
                 record.level(),
@@ -32,77 +33,31 @@ impl log::Log for ChannelLogger {
                 record.args()
             );
 
-            let &(ref lock, ref cvar) = &*self.msg_queue;
-            let mut queue = lock.lock().unwrap();
-            queue.push_back(data);
-            cvar.notify_one();
+            let _ = self.sender.unbounded_send(msg);
         }
     }
 
     fn flush(&self) {}
 }
 
-fn log_thread_func(
-    msg_queue: Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>,
-    log_path: String,
-    rotate_count: usize,
-    rotate_size: usize,
-) {
-    let mut size = 0;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .append(true)
-        .open(&log_path);
-
-    loop {
-        let &(ref lock, ref cvar) = &*msg_queue;
-        let mut queue = lock.lock().unwrap();
-        while queue.is_empty() {
-            queue = cvar.wait(queue).unwrap();
-        }
-
-        let data = queue.pop_front().unwrap();
-        match file {
-            Ok(ref mut f) => {
-                let _ = f.write_all(&data);
-                size += data.len();
+impl ChannelLogger {
+    async fn run(
+        mut receiver: UnboundedReceiver<Vec<u8>>,
+        path: String,
+        rotate_count: usize,
+        rotate_size: usize,
+    ) {
+        let mut file = FileRotate::open(path, rotate_size, rotate_count, None).await;
+        loop {
+            match receiver.next().await {
+                Some(msg) => {
+                    file.write_all(&msg).await;
+                }
+                None => {
+                    break;
+                }
             }
-            Err(_) => {}
         }
-
-        if size > rotate_size && rotate_count > 0 {
-            rotate_file(&log_path, rotate_count);
-            file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .append(true)
-                .open(&log_path);
-            size = 0;
-        }
-    }
-}
-
-fn get_rotate_name(log_path: &String, num: usize) -> String {
-    let mut path = log_path.clone();
-
-    if num > 0 {
-        path.push('.');
-        path.push_str(&num.to_string());
-    }
-
-    path
-}
-
-fn rotate_file(log_path: &String, rotate_count: usize) {
-    let mut rotate_num = rotate_count - 1;
-    let _ = remove_file(get_rotate_name(log_path, rotate_num));
-
-    while rotate_num > 0 {
-        let to = get_rotate_name(log_path, rotate_num);
-        let from = get_rotate_name(log_path, rotate_num - 1);
-        let _ = rename(from, to);
-        rotate_num -= 1;
     }
 }
 
@@ -112,16 +67,12 @@ pub fn init(
     rotate_count: usize,
     rotate_size: usize,
 ) -> Result<(), SetLoggerError> {
-    let sender = Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
-    let receiver = sender.clone();
+    let (sender, receiver) = unbounded();
 
-    thread::spawn(move || {
-        log_thread_func(receiver, log_path, rotate_count, rotate_size);
+    task::spawn(async move {
+        ChannelLogger::run(receiver, log_path, rotate_count, rotate_size).await;
     });
 
     log::set_max_level(LevelFilter::Info);
-    log::set_boxed_logger(Box::new(ChannelLogger {
-        level: level,
-        msg_queue: sender,
-    }))
+    log::set_boxed_logger(Box::new(ChannelLogger { level, sender }))
 }
