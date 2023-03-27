@@ -84,6 +84,9 @@ mod util {
         pub async fn write_all(&mut self, buf: &[u8]) {
             if let Some(ref mut f) = self.file {
                 let _ = f.write_all(buf).await;
+                // Call async_std::fs::File::flush to drain buffer in async_std::fs::File,
+                // which means call std::fs::File::write_all.
+                let _ = f.flush().await;
             }
 
             self.written_size += buf.len();
