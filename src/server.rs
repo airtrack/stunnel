@@ -9,15 +9,14 @@ use async_std::io::{self, Read, Write};
 use async_std::net::{TcpStream, UdpSocket};
 use async_std::prelude::*;
 use async_std::task;
-
 use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::sink::SinkExt;
 
-use super::cryptor::*;
-use super::protocol::*;
-use super::timer;
-use super::ucp::UcpStream;
-use super::util::*;
+use crate::cryptor::*;
+use crate::protocol::*;
+use crate::timer;
+use crate::ucp::UcpStream;
+use crate::util::*;
 
 #[derive(Clone)]
 enum TunnelMsg {

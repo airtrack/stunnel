@@ -1,8 +1,9 @@
+use std::net::SocketAddr;
+
 use async_std::task;
 use chrono::prelude::*;
 use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use futures::StreamExt;
-use std::net::SocketAddr;
 
 use crate::util::FileRotate;
 

@@ -1,14 +1,16 @@
-use crate::client::*;
-use crate::protocol::{UdpDataPacker, UdpDataUnpacker};
-use crate::proxy::{self, Destination, Proxy};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
 use async_std::channel::{self, Receiver, Sender};
 use async_std::io;
 use async_std::net::{TcpStream, UdpSocket};
 use async_std::prelude::*;
 use async_trait::async_trait;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+
+use crate::client::*;
+use crate::protocol::{UdpDataPacker, UdpDataUnpacker};
+use crate::proxy::{self, Destination, Proxy};
 
 const VER: u8 = 5;
 const RSV: u8 = 0;

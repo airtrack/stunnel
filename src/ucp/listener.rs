@@ -1,12 +1,12 @@
-use async_std::io;
-use async_std::net::UdpSocket;
-use async_std::task;
-
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::vec::Vec;
+
+use async_std::io;
+use async_std::net::UdpSocket;
+use async_std::task;
 
 use crate::ucp::internal::*;
 use crate::ucp::metrics::*;

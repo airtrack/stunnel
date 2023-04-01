@@ -1,9 +1,10 @@
+use std::vec::Vec;
+
 use crypto::blockmodes::CtrMode;
 use crypto::blowfish::Blowfish;
 use crypto::buffer::{BufferResult, ReadBuffer, RefReadBuffer, RefWriteBuffer, WriteBuffer};
 use crypto::symmetriccipher::{Decryptor, Encryptor};
 use rand;
-use std::vec::Vec;
 
 pub const CTR_SIZE: usize = 8;
 

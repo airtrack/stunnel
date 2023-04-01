@@ -10,9 +10,10 @@ pub mod timer;
 pub mod ucp;
 
 mod util {
+    use std::vec::Vec;
+
     use futures::channel::mpsc::{channel, Receiver, Sender};
     use futures::stream::SelectAll;
-    use std::vec::Vec;
 
     pub type Receivers<T> = SelectAll<Receiver<T>>;
     pub type MainSender<T> = Sender<T>;

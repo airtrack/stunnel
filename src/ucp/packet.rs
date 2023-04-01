@@ -1,7 +1,9 @@
-use crate::ucp::*;
-use crc::crc32;
 use std::cmp::min;
 use std::collections::VecDeque;
+
+use crc::crc32;
+
+use crate::ucp::*;
 
 #[derive(Clone)]
 pub(super) struct UcpPacket {

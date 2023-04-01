@@ -1,8 +1,3 @@
-use async_std::net::UdpSocket;
-use chrono::prelude::*;
-use crossbeam_utils::Backoff;
-use rand::random;
-
 use std::cell::Cell;
 use std::cmp::min;
 use std::io::{Error, ErrorKind};
@@ -12,6 +7,11 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use std::time::Instant;
 use std::vec::Vec;
+
+use async_std::net::UdpSocket;
+use chrono::prelude::*;
+use crossbeam_utils::Backoff;
+use rand::random;
 
 use crate::ucp::packet::*;
 use crate::ucp::*;

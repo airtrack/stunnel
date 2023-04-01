@@ -1,10 +1,12 @@
-use crate::proxy::{Destination, Proxy};
+use std::net::SocketAddr;
+
 use async_h1::server::{decode, Encoder};
 use async_std::io;
 use async_std::net::TcpStream;
 use async_trait::async_trait;
 use http_types::{Method, Response, StatusCode};
-use std::net::SocketAddr;
+
+use crate::proxy::{Destination, Proxy};
 
 pub struct Http;
 
