@@ -36,7 +36,7 @@ impl UcpStream {
             UcpStream::recv(receiver).await;
         });
 
-        UcpStream { inner: inner }
+        UcpStream { inner }
     }
 
     pub fn shutdown(&self) {

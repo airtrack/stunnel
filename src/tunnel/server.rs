@@ -12,11 +12,11 @@ use async_std::task;
 use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::sink::SinkExt;
 
-use crate::cryptor::*;
-use crate::protocol::*;
-use crate::timer;
+use crate::tunnel::cryptor::*;
+use crate::tunnel::interval;
+use crate::tunnel::protocol::*;
+use crate::tunnel::util::{channel_bus, MainSender, Receivers, SubSenders};
 use crate::ucp::UcpStream;
-use crate::util::*;
 
 #[derive(Clone)]
 enum TunnelMsg {
@@ -487,7 +487,7 @@ async fn process_tunnel_write<W: Write + Unpin>(
     let mut encryptor = Cryptor::new(&key);
 
     let duration = Duration::from_millis(HEARTBEAT_INTERVAL_MS);
-    let timer_stream = timer::interval(duration, TunnelMsg::Heartbeat);
+    let timer_stream = interval::interval(duration, TunnelMsg::Heartbeat);
     let mut msg_stream = timer_stream.merge(receivers);
 
     stream.write_all(encryptor.ctr_as_slice()).await?;
@@ -544,13 +544,13 @@ async fn process_tunnel_msg<W: Write + Unpin>(
             let sender = senders.get_one_sender();
 
             let read_port = TunnelReadPort {
-                id: id,
+                id,
                 tx: sender.clone(),
                 rx: Some(rx),
             };
 
             let write_port = TunnelWritePort {
-                id: id,
+                id,
                 tx: sender.clone(),
             };
 

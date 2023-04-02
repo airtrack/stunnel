@@ -8,10 +8,10 @@ use async_std::net::{SocketAddr, TcpListener};
 use async_std::prelude::*;
 use async_std::task;
 
-use stunnel::client::*;
-use stunnel::cryptor::Cryptor;
 use stunnel::logger;
 use stunnel::proxy::{http, socks5, Proxy};
+use stunnel::tunnel::cipher_key_size;
+use stunnel::tunnel::client::*;
 use stunnel::ucp::CsvMetricsService;
 
 async fn run_proxy_tunnels(
@@ -105,7 +105,7 @@ fn main() {
     let http_proxy_addr = matches
         .opt_str("http-proxy")
         .unwrap_or(String::from("127.0.0.1:8888"));
-    let (min, max) = Cryptor::key_size_range();
+    let (min, max) = cipher_key_size();
 
     if key.len() < min || key.len() > max {
         println!("key length must in range [{}, {}]", min, max);

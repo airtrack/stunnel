@@ -8,9 +8,9 @@ use async_std::net::{TcpStream, UdpSocket};
 use async_std::prelude::*;
 use async_trait::async_trait;
 
-use crate::client::*;
-use crate::protocol::{UdpDataPacker, UdpDataUnpacker};
 use crate::proxy::{self, Destination, Proxy};
+use crate::tunnel::client::*;
+use crate::tunnel::{UdpDataPacker, UdpDataUnpacker};
 
 const VER: u8 = 5;
 const RSV: u8 = 0;

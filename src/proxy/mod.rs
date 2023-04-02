@@ -5,7 +5,7 @@ use async_std::net::TcpStream;
 use async_std::prelude::*;
 use async_trait::async_trait;
 
-use crate::client::*;
+use crate::tunnel::client::*;
 
 pub mod http;
 pub mod socks5;

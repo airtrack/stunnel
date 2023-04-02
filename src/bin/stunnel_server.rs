@@ -7,9 +7,9 @@ use async_std::net::TcpListener;
 use async_std::prelude::*;
 use async_std::task;
 
-use stunnel::cryptor::Cryptor;
 use stunnel::logger;
-use stunnel::server::*;
+use stunnel::tunnel::cipher_key_size;
+use stunnel::tunnel::server::*;
 use stunnel::ucp::{CsvMetricsService, UcpListener};
 
 async fn run_ucp_server(mut listener: UcpListener, key: Vec<u8>) {
@@ -55,7 +55,7 @@ fn main() {
     let key = matches.opt_str("k").unwrap().into_bytes();
     let log_path = matches.opt_str("log").unwrap_or(String::new());
     let ucp_metrics_path = matches.opt_str("ucp-metrics-path").unwrap_or(String::new());
-    let (min, max) = Cryptor::key_size_range();
+    let (min, max) = cipher_key_size();
 
     if key.len() < min || key.len() > max {
         println!("key length must in range [{}, {}]", min, max);

@@ -10,11 +10,11 @@ use async_std::task;
 use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::sink::SinkExt;
 
-use crate::cryptor::*;
-use crate::protocol::*;
-use crate::timer;
+use crate::tunnel::cryptor::*;
+use crate::tunnel::interval;
+use crate::tunnel::protocol::*;
+use crate::tunnel::util::{channel_bus, MainSender, SubSenders};
 use crate::ucp::{MetricsService, UcpStream};
-use crate::util::*;
 
 #[derive(Clone)]
 enum TunnelMsg {
@@ -75,11 +75,11 @@ impl Tunnel {
 
         (
             TunnelWritePort {
-                id: id,
+                id,
                 tx: sender.clone(),
             },
             TunnelReadPort {
-                id: id,
+                id,
                 tx: sender.clone(),
                 rx: Some(rx),
             },
@@ -94,7 +94,7 @@ impl TcpTunnel {
 
         task::spawn(async move {
             let duration = Duration::from_millis(HEARTBEAT_INTERVAL_MS);
-            let timer_stream = timer::interval(duration, TunnelMsg::Heartbeat);
+            let timer_stream = interval::interval(duration, TunnelMsg::Heartbeat);
             let mut msg_stream = timer_stream.merge(receivers);
 
             loop {
@@ -112,7 +112,7 @@ impl TcpTunnel {
         Tunnel {
             id: 1,
             senders: sub_senders,
-            main_sender: main_sender,
+            main_sender,
         }
     }
 }
@@ -129,7 +129,7 @@ impl UcpTunnel {
 
         task::spawn(async move {
             let duration = Duration::from_millis(HEARTBEAT_INTERVAL_MS);
-            let timer_stream = timer::interval(duration, TunnelMsg::Heartbeat);
+            let timer_stream = interval::interval(duration, TunnelMsg::Heartbeat);
             let mut msg_stream = timer_stream.merge(receivers);
 
             loop {
@@ -148,7 +148,7 @@ impl UcpTunnel {
         Tunnel {
             id: 1,
             senders: sub_senders,
-            main_sender: main_sender,
+            main_sender,
         }
     }
 }

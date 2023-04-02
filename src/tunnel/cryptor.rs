@@ -26,10 +26,7 @@ impl Cryptor {
     pub fn with_ctr(key: &[u8], ctr: Vec<u8>) -> Cryptor {
         let algo = Blowfish::new(key);
         let cryptor = CtrMode::new(algo, ctr.clone());
-        Cryptor {
-            cryptor: cryptor,
-            ctr: ctr,
-        }
+        Cryptor { cryptor, ctr }
     }
 
     pub fn key_size_range() -> (usize, usize) {
