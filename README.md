@@ -27,8 +27,23 @@ Build by [Cargo](https://crates.io/):
 Usage
 -----
 
-	./stunnel_server -l listen-address -k key [--log log-path] [--ucp-metrics-path path]
-	./stunnel_client -s server-address -k key [-c tcp-tunnel-count] [--socks5-proxy socks5-proxy-address] [--http-proxy http-proxy-address] [--log log-path] [--ucp-metrics-path path] [--enable-ucp]
+	./stunnel_server
+	Options:
+	    -l, --listen ip:port
+	    -k, --key key string
+	        --log log path
+	        --ucp-metrics-path metrics path
+
+	./stunnel_client
+	Options:
+	    -s, --server ip:port
+	    -k, --key key string
+	        --enable-ucp
+	        --socks5-proxy ip:port
+	        --http-proxy ip:port
+	        --log log path
+	        --ucp-metrics-path metrics path
+	        --tcp-tunnel-count number of tunnels
 
 Browser connect client address(`127.0.0.1:1080`) through SOCKS5 or connect client address(`127.0.0.1:8888`) through HTTP.
 

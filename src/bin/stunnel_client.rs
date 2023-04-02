@@ -61,34 +61,19 @@ fn main() {
     let program = args[0].clone();
 
     let mut opts = getopts::Options::new();
-    opts.reqopt("s", "server", "server address", "server-address");
-    opts.reqopt("k", "key", "secret key", "key");
-    opts.optopt(
-        "c",
-        "tcp-tunnel-count",
-        "tcp tunnel count",
-        "tcp-tunnel-count",
-    );
-    opts.optopt(
-        "",
-        "socks5-proxy",
-        "socks5 proxy listen address",
-        "socks5-proxy-address",
-    );
-    opts.optopt(
-        "",
-        "http-proxy",
-        "http proxy listen address",
-        "http-proxy-address",
-    );
-    opts.optopt("", "log", "log path", "log-path");
-    opts.optopt("", "ucp-metrics-path", "metrics path", "metrics-path");
-    opts.optflag("", "enable-ucp", "enable ucp");
+    opts.reqopt("s", "server", "", "ip:port");
+    opts.reqopt("k", "key", "", "key string");
+    opts.optflag("", "enable-ucp", "");
+    opts.optopt("", "socks5-proxy", "", "ip:port");
+    opts.optopt("", "http-proxy", "", "ip:port");
+    opts.optopt("", "log", "", "log path");
+    opts.optopt("", "ucp-metrics-path", "", "metrics path");
+    opts.optopt("", "tcp-tunnel-count", "", "number of tunnels");
 
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
         Err(_) => {
-            println!("{}", opts.short_usage(&program));
+            println!("{}", opts.usage(&program));
             return;
         }
     };
