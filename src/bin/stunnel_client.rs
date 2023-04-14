@@ -61,14 +61,14 @@ fn main() {
     let program = args[0].clone();
 
     let mut opts = getopts::Options::new();
-    opts.reqopt("s", "server", "", "ip:port");
-    opts.reqopt("k", "key", "", "key string");
+    opts.reqopt("s", "server", "", "<IP:PORT>");
+    opts.reqopt("k", "key", "", "<STRING>");
     opts.optflag("", "enable-ucp", "");
-    opts.optopt("", "socks5-proxy", "", "ip:port");
-    opts.optopt("", "http-proxy", "", "ip:port");
-    opts.optopt("", "log", "", "log path");
-    opts.optopt("", "ucp-metrics-path", "", "metrics path");
-    opts.optopt("", "tcp-tunnel-count", "", "number of tunnels");
+    opts.optopt("", "socks5-proxy", "", "<IP:PORT>");
+    opts.optopt("", "http-proxy", "", "<IP:PORT>");
+    opts.optopt("", "log", "", "<PATH>");
+    opts.optopt("", "ucp-metrics-path", "", "<PATH>");
+    opts.optopt("", "tcp-tunnel-count", "", "<NUMBER>");
 
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,

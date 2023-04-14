@@ -27,23 +27,23 @@ Build by [Cargo](https://crates.io/):
 Usage
 -----
 
-	./stunnel_server
+	./stunnel_server <OPTIONS>
 	Options:
-	    -l, --listen ip:port
-	    -k, --key key string
-	        --log log path
-	        --ucp-metrics-path metrics path
+	    -l, --listen <IP:PORT>
+	    -k, --key <STRING>
+	        --log <PATH>
+	        --ucp-metrics-path <PATH>
 
-	./stunnel_client
+	./stunnel_client <OPTIONS>
 	Options:
-	    -s, --server ip:port
-	    -k, --key key string
+	    -s, --server <IP:PORT>
+	    -k, --key <STRING>
 	        --enable-ucp
-	        --socks5-proxy ip:port
-	        --http-proxy ip:port
-	        --log log path
-	        --ucp-metrics-path metrics path
-	        --tcp-tunnel-count number of tunnels
+	        --socks5-proxy <IP:PORT>
+	        --http-proxy <IP:PORT>
+	        --log <PATH>
+	        --ucp-metrics-path <PATH>
+	        --tcp-tunnel-count <NUMBER>
 
 Browser connect client address(`127.0.0.1:1080`) through SOCKS5 or connect client address(`127.0.0.1:8888`) through HTTP.
 

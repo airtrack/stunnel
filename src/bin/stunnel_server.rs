@@ -38,10 +38,10 @@ fn main() {
     let program = args[0].clone();
 
     let mut opts = getopts::Options::new();
-    opts.reqopt("l", "listen", "", "ip:port");
-    opts.reqopt("k", "key", "", "key string");
-    opts.optopt("", "log", "", "log path");
-    opts.optopt("", "ucp-metrics-path", "", "metrics path");
+    opts.reqopt("l", "listen", "", "<IP:PORT>");
+    opts.reqopt("k", "key", "", "<STRING>");
+    opts.optopt("", "log", "", "<PATH>");
+    opts.optopt("", "ucp-metrics-path", "", "<PATH>");
 
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
