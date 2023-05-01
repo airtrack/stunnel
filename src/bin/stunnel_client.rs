@@ -79,9 +79,9 @@ fn main() {
     };
 
     let server_addr = matches.opt_str("s").unwrap();
-    let tunnel_count = matches.opt_str("c").unwrap_or(String::new());
     let key = matches.opt_str("k").unwrap().into_bytes();
     let log_path = matches.opt_str("log").unwrap_or(String::new());
+    let tcp_tunnel_count = matches.opt_str("tcp-tunnel-count").unwrap_or(String::new());
     let ucp_metrics_path = matches.opt_str("ucp-metrics-path").unwrap_or(String::new());
     let enable_ucp = matches.opt_present("enable-ucp");
     let socks5_proxy_addr = matches
@@ -97,7 +97,7 @@ fn main() {
         return;
     }
 
-    let count: u32 = match tunnel_count.parse() {
+    let count: u32 = match tcp_tunnel_count.parse() {
         Err(_) | Ok(0) => 1,
         Ok(count) => count,
     };
