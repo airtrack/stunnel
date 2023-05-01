@@ -5,7 +5,6 @@ authors = ["airtrack <airtrack.sk@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-rust-crypto = "*"
 chrono = "0.4"
 rand = "*"
 log = { version = "*", features = ["std"] }
@@ -18,3 +17,5 @@ futures = "0.3"
 async-trait = "0.1.41"
 http-types = "2.7.0"
 async-h1 = "2.3.0"
+scrypt = { version = "0.11.0", default-features = false }
+chacha20poly1305 = "*"

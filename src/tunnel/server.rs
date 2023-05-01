@@ -12,7 +12,7 @@ use async_std::task;
 use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::sink::SinkExt;
 
-use crate::tunnel::cryptor::*;
+use crate::tunnel::cryptor::{Decryptor, Encryptor};
 use crate::tunnel::interval;
 use crate::tunnel::protocol::*;
 use crate::tunnel::util::{channel_bus, MainSender, Receivers, SubSenders};
@@ -182,7 +182,7 @@ impl PortHub {
 
 async fn tunnel_port_write_tcp(stream: &mut &TcpStream, mut write_port: TunnelWritePort) {
     loop {
-        let mut buf = vec![0; 1024];
+        let mut buf = vec![0; 2048];
         match stream.read(&mut buf).await {
             Ok(0) => {
                 let _ = stream.shutdown(Shutdown::Read);
@@ -404,18 +404,13 @@ async fn process_tunnel_read<R: Read + Unpin>(
     sender: &mut MainSender<TunnelMsg>,
     stream: &mut R,
 ) -> std::io::Result<()> {
-    let mut ctr = vec![0; Cryptor::ctr_size()];
-    stream.read_exact(&mut ctr).await?;
+    let mut initialize_data = Decryptor::initialize_data();
+    stream.read_exact(&mut initialize_data).await?;
 
-    let mut decryptor = Cryptor::with_ctr(&key, ctr);
-
-    let mut buf = vec![0; VERIFY_DATA.len()];
-    stream.read_exact(&mut buf).await?;
-
-    let data = decryptor.decrypt(&buf);
-    if &data != &VERIFY_DATA {
-        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
-    }
+    let mut decryptor = match Decryptor::new(&key, &initialize_data) {
+        Some(decryptor) => decryptor,
+        None => return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+    };
 
     loop {
         let mut op = [0u8; 1];
@@ -453,12 +448,14 @@ async fn process_tunnel_read<R: Read + Unpin>(
                 stream.read_exact(&mut buf).await?;
 
                 let pos = (len - 2) as usize;
-                let domain_name = decryptor.decrypt(&buf[0..pos]);
                 let port = u16::from_be(unsafe { *(buf[pos..].as_ptr() as *const u16) });
 
-                let _ = sender
-                    .send(TunnelMsg::CSConnectDN(id, domain_name, port))
-                    .await;
+                match decryptor.decrypt(&buf[0..pos]) {
+                    Some(domain) => {
+                        let _ = sender.send(TunnelMsg::CSConnectDN(id, domain, port)).await;
+                    }
+                    None => {}
+                }
             }
 
             _ => {
@@ -469,8 +466,12 @@ async fn process_tunnel_read<R: Read + Unpin>(
                 let mut buf = vec![0; len as usize];
                 stream.read_exact(&mut buf).await?;
 
-                let data = decryptor.decrypt(&buf);
-                let _ = sender.send(TunnelMsg::CSData(op, id, data)).await;
+                match decryptor.decrypt(&buf) {
+                    Some(data) => {
+                        let _ = sender.send(TunnelMsg::CSData(op, id, data)).await;
+                    }
+                    None => {}
+                }
             }
         }
     }
@@ -484,13 +485,14 @@ async fn process_tunnel_write<W: Write + Unpin>(
     stream: &mut W,
 ) -> std::io::Result<()> {
     let mut alive_time = Instant::now();
-    let mut encryptor = Cryptor::new(&key);
+    let mut encryptor = Encryptor::new(&key);
 
     let duration = Duration::from_millis(HEARTBEAT_INTERVAL_MS);
     let timer_stream = interval::interval(duration, TunnelMsg::Heartbeat);
     let mut msg_stream = timer_stream.merge(receivers);
 
-    stream.write_all(encryptor.ctr_as_slice()).await?;
+    let initialize_data = encryptor.initialize_data();
+    stream.write_all(&initialize_data).await?;
 
     loop {
         match msg_stream.next().await {
@@ -527,7 +529,7 @@ async fn process_tunnel_msg<W: Write + Unpin>(
     senders: &mut SubSenders<TunnelMsg>,
     alive_time: &mut Instant,
     port_hub: &mut PortHub,
-    encryptor: &mut Cryptor,
+    encryptor: &mut Encryptor,
     stream: &mut W,
 ) -> std::io::Result<()> {
     match msg {

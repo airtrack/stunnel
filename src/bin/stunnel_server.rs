@@ -8,7 +8,6 @@ use async_std::prelude::*;
 use async_std::task;
 
 use stunnel::logger;
-use stunnel::tunnel::cipher_key_size;
 use stunnel::tunnel::server::*;
 use stunnel::ucp::{CsvMetricsService, UcpListener};
 
@@ -55,12 +54,6 @@ fn main() {
     let key = matches.opt_str("k").unwrap().into_bytes();
     let log_path = matches.opt_str("log").unwrap_or(String::new());
     let ucp_metrics_path = matches.opt_str("ucp-metrics-path").unwrap_or(String::new());
-    let (min, max) = cipher_key_size();
-
-    if key.len() < min || key.len() > max {
-        println!("key length must in range [{}, {}]", min, max);
-        return;
-    }
 
     logger::init(log::Level::Info, log_path, 1, 2000000).unwrap();
     info!("starting up");

@@ -91,7 +91,7 @@ pub trait Proxy: Sync {
 
 async fn proxy_tunnel_read(stream: &mut &TcpStream, mut write_port: TunnelWritePort) {
     loop {
-        let mut buf = vec![0; 1024];
+        let mut buf = vec![0; 2048];
         match stream.read(&mut buf).await {
             Ok(0) => {
                 let _ = stream.shutdown(Shutdown::Read);

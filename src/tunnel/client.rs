@@ -10,7 +10,7 @@ use async_std::task;
 use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::sink::SinkExt;
 
-use crate::tunnel::cryptor::*;
+use crate::tunnel::cryptor::{Decryptor, Encryptor};
 use crate::tunnel::interval;
 use crate::tunnel::protocol::*;
 use crate::tunnel::util::{channel_bus, MainSender, SubSenders};
@@ -426,10 +426,13 @@ async fn process_tunnel_read<R: Read + Unpin>(
     mut core_tx: Sender<TunnelMsg>,
     stream: &mut R,
 ) -> std::io::Result<()> {
-    let mut ctr = vec![0; CTR_SIZE];
-    stream.read_exact(&mut ctr).await?;
+    let mut initailize_data = Decryptor::initialize_data();
+    stream.read_exact(&mut initailize_data).await?;
 
-    let mut decryptor = Cryptor::with_ctr(&key, ctr);
+    let mut decryptor = match Decryptor::new(&key, &initailize_data) {
+        Some(decryptor) => decryptor,
+        None => return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+    };
 
     loop {
         let mut op = [0u8; 1];
@@ -462,12 +465,15 @@ async fn process_tunnel_read<R: Read + Unpin>(
                 let mut buf = vec![0; len as usize];
                 stream.read_exact(&mut buf).await?;
 
-                let data = decryptor.decrypt(&buf);
-
-                if op == sc::CONNECT_OK {
-                    let _ = core_tx.send(TunnelMsg::SCConnectOk(id, data)).await;
-                } else {
-                    let _ = core_tx.send(TunnelMsg::SCData(id, data)).await;
+                match decryptor.decrypt(&buf) {
+                    Some(data) => {
+                        if op == sc::CONNECT_OK {
+                            let _ = core_tx.send(TunnelMsg::SCConnectOk(id, data)).await;
+                        } else {
+                            let _ = core_tx.send(TunnelMsg::SCData(id, data)).await;
+                        }
+                    }
+                    None => {}
                 }
             }
 
@@ -487,11 +493,11 @@ async fn process_tunnel_write<W: Write + Unpin, S: Stream<Item = TunnelMsg> + Un
     port_hub: &mut PortHub,
     stream: &mut W,
 ) -> std::io::Result<()> {
-    let mut encryptor = Cryptor::new(&key);
+    let mut encryptor = Encryptor::new(&key);
     let mut alive_time = Instant::now();
 
-    stream.write_all(encryptor.ctr_as_slice()).await?;
-    stream.write_all(&encryptor.encrypt(&VERIFY_DATA)).await?;
+    let initialize_data = encryptor.initialize_data();
+    stream.write_all(&initialize_data).await?;
 
     loop {
         match msg_stream.next().await {
@@ -524,7 +530,7 @@ async fn process_tunnel_msg<W: Write + Unpin>(
     msg: TunnelMsg,
     alive_time: &mut Instant,
     port_hub: &mut PortHub,
-    encryptor: &mut Cryptor,
+    encryptor: &mut Encryptor,
     stream: &mut W,
 ) -> std::io::Result<()> {
     match msg {

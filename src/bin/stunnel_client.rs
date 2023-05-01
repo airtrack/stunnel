@@ -10,7 +10,6 @@ use async_std::task;
 
 use stunnel::logger;
 use stunnel::proxy::{http, socks5, Proxy};
-use stunnel::tunnel::cipher_key_size;
 use stunnel::tunnel::client::*;
 use stunnel::ucp::CsvMetricsService;
 
@@ -90,12 +89,6 @@ fn main() {
     let http_proxy_addr = matches
         .opt_str("http-proxy")
         .unwrap_or(String::from("127.0.0.1:8888"));
-    let (min, max) = cipher_key_size();
-
-    if key.len() < min || key.len() > max {
-        println!("key length must in range [{}, {}]", min, max);
-        return;
-    }
 
     let count: u32 = match tcp_tunnel_count.parse() {
         Err(_) | Ok(0) => 1,

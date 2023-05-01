@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 use std::str::from_utf8;
 use std::vec::Vec;
 
-pub const VERIFY_DATA: [u8; 8] = [0xF0u8, 0xEF, 0xE, 0x2, 0xAE, 0xBC, 0x8C, 0x78];
 pub const HEARTBEAT_INTERVAL_MS: u64 = 5000;
 pub const ALIVE_TIMEOUT_TIME_MS: u128 = 60000;
 
