@@ -473,7 +473,9 @@ async fn process_tunnel_read<R: Read + Unpin>(
                             let _ = core_tx.send(TunnelMsg::SCData(id, data)).await;
                         }
                     }
-                    None => {}
+                    None => {
+                        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+                    }
                 }
             }
 

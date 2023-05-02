@@ -454,7 +454,9 @@ async fn process_tunnel_read<R: Read + Unpin>(
                     Some(domain) => {
                         let _ = sender.send(TunnelMsg::CSConnectDN(id, domain, port)).await;
                     }
-                    None => {}
+                    None => {
+                        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+                    }
                 }
             }
 
@@ -470,7 +472,9 @@ async fn process_tunnel_read<R: Read + Unpin>(
                     Some(data) => {
                         let _ = sender.send(TunnelMsg::CSData(op, id, data)).await;
                     }
-                    None => {}
+                    None => {
+                        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+                    }
                 }
             }
         }
