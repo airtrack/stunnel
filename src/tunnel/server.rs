@@ -404,10 +404,10 @@ async fn process_tunnel_read<R: Read + Unpin>(
     sender: &mut MainSender<TunnelMsg>,
     stream: &mut R,
 ) -> std::io::Result<()> {
-    let mut initialize_data = Decryptor::initialize_data();
-    stream.read_exact(&mut initialize_data).await?;
+    let mut handshake = Decryptor::handshake();
+    stream.read_exact(&mut handshake).await?;
 
-    let mut decryptor = match Decryptor::new(&key, &initialize_data) {
+    let mut decryptor = match Decryptor::new(&key, &handshake) {
         Some(decryptor) => decryptor,
         None => return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
     };
@@ -495,8 +495,8 @@ async fn process_tunnel_write<W: Write + Unpin>(
     let timer_stream = interval::interval(duration, TunnelMsg::Heartbeat);
     let mut msg_stream = timer_stream.merge(receivers);
 
-    let initialize_data = encryptor.initialize_data();
-    stream.write_all(&initialize_data).await?;
+    let handshake = encryptor.handshake();
+    stream.write_all(&handshake).await?;
 
     loop {
         match msg_stream.next().await {
