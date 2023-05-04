@@ -3,7 +3,7 @@ use std::vec::Vec;
 use chacha20poly1305::{
     aead::generic_array::typenum::Unsigned,
     aead::{Aead, AeadCore, KeyInit},
-    ChaCha20Poly1305, Nonce,
+    ChaCha20Poly1305, Key, KeySizeUser, Nonce,
 };
 use rand::{rngs::OsRng, RngCore};
 use scrypt;
@@ -27,6 +27,10 @@ impl CipherMeta {
         <Cipher as AeadCore>::TagSize::to_usize()
     }
 
+    fn key_size() -> usize {
+        <Cipher as KeySizeUser>::key_size()
+    }
+
     fn handshake_message() -> &'static [u8] {
         &HANDSHAKE_MESSAGE
     }
@@ -36,10 +40,10 @@ impl CipherMeta {
     }
 
     fn new_cipher(password: &[u8], salt: &[u8]) -> Cipher {
-        let params = scrypt::Params::recommended();
-        let mut secret_key = [0u8; scrypt::Params::RECOMMENDED_LEN];
+        let params = scrypt::Params::new(10, 8, 1, Self::key_size()).unwrap();
+        let mut secret_key = Key::default();
         scrypt::scrypt(password, &salt, &params, &mut secret_key).unwrap();
-        Cipher::new(&secret_key.into())
+        Cipher::new(&secret_key)
     }
 }
 
