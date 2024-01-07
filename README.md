@@ -47,9 +47,29 @@ Usage
 
 Browser connect client address(`127.0.0.1:1080`) through SOCKS5 or connect client address(`127.0.0.1:8888`) through HTTP.
 
-`--enable-ucp` option on client side to enable UCP tunnel instead of TCP tunnel, UCP tunnel is much faster than TCP tunnel in most cases.
+`--enable-ucp` option on client side to enable UCP tunnel instead of TCP tunnel, UCP tunnel is much faster than TCP tunnel in some cases.
 
 UCP
 ---
 
 UCP is an ARQ protocol implementation, which is based on UDP and inspired by [KCP](https://github.com/skywind3000/kcp).
+
+Work with autoproxy and gatewaysocks
+----------------------------------
+
+* [autoproxy](https://github.com/airtrack/autoproxy)
+* [gatewaysocks](https://github.com/airtrack/gatewaysocks)
+
+```
+    ----------------                 -------------                     -----------
+    | gatewaysocks | === TCP/UDP ==> | autoproxy | ===== TCP/UDP ====> | stunnel |
+    ----------------                 -------------   |                 -----------
+           ^                               ^         |                 -----------
+           |                               |         |== TCP/UDP ====> | direct  |
+           |                               |                           -----------
+    -----------------             ------------------
+    | other devices |             |   set system   |
+    |  in the same  |             | proxy settings |
+    |    router     |             |  to autoproxy  |
+    -----------------             ------------------
+```
