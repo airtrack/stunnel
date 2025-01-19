@@ -6,12 +6,11 @@ edition = "2021"
 
 [dependencies]
 chrono = "0.4"
-log = { version = "0.4", features = ["std"] }
-async-std = { version = "1.12.0", features = ["unstable"] }
+log = "0.4"
+env_logger = "0.11"
 futures = "0.3"
-async-trait = "0.1.41"
-http-types = "2.7.0"
-async-h1 = "2.3.0"
+async-trait = "*"
+httparse = "*"
 quinn = "0.11"
 rcgen = "0.13"
 rustls = "0.23"

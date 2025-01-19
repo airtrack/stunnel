@@ -1,12 +1,15 @@
 #[macro_use]
 extern crate log;
 
-use stunnel::logger;
 use stunnel::quic::server;
 use tokio::runtime::Runtime;
 
 fn main() {
-    logger::init(log::Level::Info, "server.log".to_string(), 1, 2000000).unwrap();
+    env_logger::builder()
+        .format_timestamp(None)
+        .filter_level(log::LevelFilter::Info)
+        .parse_default_env()
+        .init();
     info!("starting up");
 
     let rt = Runtime::new().unwrap();

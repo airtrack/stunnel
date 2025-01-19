@@ -1,363 +1,357 @@
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::{
+    io::{Error, ErrorKind},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    ops::Range,
+    sync::Arc,
+};
 
-use async_std::channel::{self, Receiver, Sender};
-use async_std::io;
-use async_std::net::{TcpStream, UdpSocket};
-use async_std::prelude::*;
-use async_trait::async_trait;
+use futures::future::abortable;
+use log::{error, info};
+use tokio::{
+    io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt},
+    net::{TcpStream, UdpSocket},
+    sync::oneshot,
+};
 
-use crate::proxy::{self, Destination, Proxy};
-use crate::tunnel::client::*;
-use crate::tunnel::{UdpDataPacker, UdpDataUnpacker};
-
-const VER: u8 = 5;
-const RSV: u8 = 0;
+const SOCKS5_VER: u8 = 5;
+const METHOD_NO_AUTH: u8 = 0;
 
 const CMD_CONNECT: u8 = 1;
 const CMD_UDP_ASSOCIATE: u8 = 3;
 
-const METHOD_NO_AUTH: u8 = 0;
-const METHOD_NO_ACCEPT: u8 = 0xFF;
-
-const ATYP_IPV4: u8 = 1;
-const ATYP_DOMAINNAME: u8 = 3;
-const ATYP_IPV6: u8 = 4;
+const ADDR_TYPE_IPV4: u8 = 1;
+const ADDR_TYPE_IPV6: u8 = 4;
+const ADDR_TYPE_DOMAIN: u8 = 3;
 
 const REP_SUCCESS: u8 = 0;
-const REP_FAILURE: u8 = 1;
+const REP_HOST_UNREACHABLE: u8 = 4;
 
-struct UdpContext {
-    socket: UdpSocket,
-    alive: AtomicBool,
-    tx: Sender<SocketAddr>,
-    rx: Receiver<SocketAddr>,
+const SOCKS5_IPV4_ADDR_LEN: usize = 10;
+
+enum Socks5Addr {
+    IPv4(SocketAddr),
+    Host(String),
 }
 
-pub struct Socks5 {
-    udp_socks5: AtomicBool,
-    udp: Option<UdpContext>,
+struct Socks5AddrError;
+
+impl Socks5Addr {
+    fn parse(buf: &[u8]) -> Result<(Self, usize), Socks5AddrError> {
+        if buf.len() < SOCKS5_IPV4_ADDR_LEN {
+            return Err(Socks5AddrError);
+        }
+
+        match buf[3] {
+            ADDR_TYPE_IPV4 => {
+                let ipv4 = Ipv4Addr::new(buf[4], buf[5], buf[6], buf[7]);
+                let bytes = [buf[8], buf[9]];
+                let port = u16::from_be_bytes(bytes);
+                let addr = SocketAddrV4::new(ipv4, port);
+                Ok((Socks5Addr::IPv4(SocketAddr::V4(addr)), SOCKS5_IPV4_ADDR_LEN))
+            }
+            ADDR_TYPE_IPV6 => Err(Socks5AddrError),
+            ADDR_TYPE_DOMAIN => {
+                let len = buf[4] as usize;
+                if buf.len() < 4 + 1 + len + 2 {
+                    return Err(Socks5AddrError);
+                }
+
+                let domain: Vec<u8> = buf[5..5 + len].iter().copied().collect();
+                let host = String::from_utf8(domain).map_err(|_| Socks5AddrError)?;
+                let bytes = [buf[5 + len], buf[6 + len]];
+                let port = u16::from_be_bytes(bytes);
+                let host = format!("{}:{}", host, port);
+                Ok((Socks5Addr::Host(host), 7 + len))
+            }
+            _ => Err(Socks5AddrError),
+        }
+    }
+
+    fn to_slice(&self, buf: &mut [u8]) -> Result<usize, Socks5AddrError> {
+        match self {
+            Socks5Addr::IPv4(SocketAddr::V4(addr)) => {
+                if buf.len() < SOCKS5_IPV4_ADDR_LEN {
+                    return Err(Socks5AddrError);
+                }
+
+                buf[0] = 0;
+                buf[1] = 0;
+                buf[2] = 0;
+                buf[3] = ADDR_TYPE_IPV4;
+                buf[4..8].copy_from_slice(&addr.ip().octets());
+                buf[8..10].copy_from_slice(&addr.port().to_be_bytes());
+
+                Ok(SOCKS5_IPV4_ADDR_LEN)
+            }
+            _ => Err(Socks5AddrError),
+        }
+    }
 }
 
-#[async_trait]
-impl Proxy for Socks5 {
-    async fn handshake(&mut self, stream: &mut TcpStream) -> std::io::Result<Destination> {
-        self.handshake_socks5(stream).await
+pub enum Socks5Proxy {
+    Connect {
+        stream: Socks5TcpStream,
+        host: String,
+    },
+    UdpAssociate {
+        socket: Socks5UdpSocket,
+        holder: TcpStream,
+    },
+}
+
+impl Socks5Proxy {
+    pub async fn accept(mut stream: TcpStream) -> std::io::Result<Self> {
+        Self::select_method(&mut stream).await?;
+
+        let mut req = [0u8; 4];
+        stream.read_exact(&mut req).await?;
+        match req[1] {
+            CMD_CONNECT => Self::accept_connect(stream, req[3]).await,
+            CMD_UDP_ASSOCIATE => Self::accept_udp_associate(stream, req[3]).await,
+            c => {
+                let error = format!("Unsupport SOCKS5 CMD {}", c);
+                Err(Error::new(ErrorKind::Other, error))
+            }
+        }
     }
 
-    async fn destination_unreached(&self, stream: &mut TcpStream) -> std::io::Result<()> {
-        destination_unreached(stream).await
-    }
-
-    async fn destination_connected(
-        &self,
-        stream: &mut TcpStream,
-        bind_addr: SocketAddr,
-    ) -> std::io::Result<()> {
-        destination_connected(stream, bind_addr).await
-    }
-
-    async fn proxy_tunnel_read(&self, stream: &mut &TcpStream, write_port: TunnelWritePort) {
-        if self.udp_socks5.load(Ordering::Relaxed) {
-            self.udp_proxy_tunnel_read(write_port).await;
+    async fn reply(stream: &mut TcpStream, success: bool, bind: SocketAddr) -> std::io::Result<()> {
+        let rep = if success {
+            REP_SUCCESS
         } else {
-            proxy::proxy_tunnel_read(stream, write_port).await;
-        }
-    }
-
-    async fn proxy_tunnel_write(&self, stream: &mut &TcpStream, read_port: TunnelReadPort) {
-        if self.udp_socks5.load(Ordering::Relaxed) {
-            let h = self.udp_proxy_connection_holder(stream);
-            let w = self.udp_proxy_tunnel_write(read_port);
-            h.join(w).await;
+            REP_HOST_UNREACHABLE
+        };
+        let addr_type = if bind.is_ipv4() {
+            ADDR_TYPE_IPV4
         } else {
-            proxy::proxy_tunnel_write(stream, read_port).await;
+            ADDR_TYPE_IPV6
+        };
+
+        let ack = [SOCKS5_VER, rep, 0, addr_type];
+        stream.write_all(&ack).await?;
+
+        match bind {
+            SocketAddr::V4(addr) => {
+                stream.write_all(&addr.ip().octets()).await?;
+                stream.write_u16(addr.port()).await
+            }
+            SocketAddr::V6(addr) => {
+                stream.write_all(&addr.ip().octets()).await?;
+                stream.write_u16(addr.port()).await
+            }
         }
     }
-}
 
-impl Socks5 {
-    pub fn new() -> Self {
-        Self {
-            udp_socks5: AtomicBool::new(false),
-            udp: None,
-        }
-    }
-
-    async fn handshake_socks5(&mut self, stream: &mut TcpStream) -> std::io::Result<Destination> {
+    async fn select_method(stream: &mut TcpStream) -> std::io::Result<()> {
         let mut buf = [0u8; 2];
         stream.read_exact(&mut buf).await?;
 
-        if buf[0] != VER {
-            choose_method(stream, METHOD_NO_ACCEPT).await?;
-            return Ok(Destination::Unknown);
+        if buf[0] != SOCKS5_VER {
+            return Err(Error::new(ErrorKind::Other, "SOCKS5 VER error"));
         }
 
-        let mut methods = vec![0; buf[1] as usize];
+        let mut methods = vec![0u8; buf[1] as usize];
         stream.read_exact(&mut methods).await?;
-
-        if !methods.into_iter().any(|method| method == METHOD_NO_AUTH) {
-            choose_method(stream, METHOD_NO_ACCEPT).await?;
-            return Ok(Destination::Unknown);
+        if !methods.into_iter().any(|m| m == METHOD_NO_AUTH) {
+            return Err(Error::new(ErrorKind::Other, "Not found NO AUTH method"));
         }
 
-        choose_method(stream, METHOD_NO_AUTH).await?;
-
-        let mut buf = [0u8; 4];
-        stream.read_exact(&mut buf).await?;
-
-        let cmd = buf[1];
-        if cmd != CMD_CONNECT && cmd != CMD_UDP_ASSOCIATE {
-            return Ok(Destination::Unknown);
-        }
-
-        let destination = match buf[3] {
-            ATYP_IPV4 => {
-                let mut ipv4_addr = [0u8; 6];
-                stream.read_exact(&mut ipv4_addr).await?;
-
-                let ipv4 = unsafe { *(ipv4_addr.as_ptr() as *const u32) };
-                let port = unsafe { *(ipv4_addr.as_ptr().offset(4) as *const u16) };
-                let addr = SocketAddr::V4(SocketAddrV4::new(
-                    Ipv4Addr::from(u32::from_be(ipv4)),
-                    u16::from_be(port),
-                ));
-
-                Destination::Address(addr)
-            }
-
-            ATYP_DOMAINNAME => {
-                let mut len = [0u8; 1];
-                stream.read_exact(&mut len).await?;
-
-                let len = len[0] as usize;
-                let mut buf = vec![0u8; len + 2];
-                stream.read_exact(&mut buf).await?;
-
-                let port = unsafe { *(buf.as_ptr().offset(len as isize) as *const u16) };
-                buf.truncate(len);
-                Destination::DomainName(buf, u16::from_be(port))
-            }
-
-            ATYP_IPV6 => Destination::Unknown,
-            _ => Destination::Unknown,
-        };
-
-        if cmd == CMD_CONNECT {
-            return Ok(destination);
-        }
-
-        return self.handshake_udp_associate(destination).await;
+        let ack = [SOCKS5_VER, METHOD_NO_AUTH];
+        stream.write_all(&ack).await
     }
 
-    async fn handshake_udp_associate(
-        &mut self,
-        destination: Destination,
-    ) -> std::io::Result<Destination> {
-        match destination {
-            Destination::Address(_) => {}
-            _ => {
-                return Ok(Destination::Unknown);
-            }
-        };
+    async fn accept_connect(mut stream: TcpStream, atype: u8) -> std::io::Result<Self> {
+        let host = Self::parse_host(&mut stream, atype).await?;
+        let stream = Socks5TcpStream::new(stream);
+        Ok(Self::Connect { stream, host })
+    }
 
-        let socket = UdpSocket::bind("127.0.0.1:0").await?;
-        let alive = AtomicBool::new(true);
-        let local_addr = socket.local_addr()?;
-        let (tx, rx) = channel::bounded(1);
-
-        self.udp_socks5.store(true, Ordering::Relaxed);
-        self.udp = Some(UdpContext {
+    async fn accept_udp_associate(mut stream: TcpStream, atype: u8) -> std::io::Result<Self> {
+        let _ = Self::parse_host(&mut stream, atype).await?;
+        let socket = Socks5UdpSocket::new().await?;
+        Self::reply(&mut stream, true, socket.socket.local_addr().unwrap()).await?;
+        Ok(Self::UdpAssociate {
             socket,
-            alive,
-            tx,
-            rx,
-        });
-
-        return Ok(Destination::UdpAssociate(local_addr));
+            holder: stream,
+        })
     }
 
-    async fn udp_proxy_tunnel_read(&self, mut write_port: TunnelWritePort) {
-        let udp_packer = UdpDataPacker;
-        let udp = self.udp.as_ref().unwrap();
-        let mut buf = [0; 1500];
-        let mut send_addr = false;
-
-        loop {
-            if !udp.alive.load(Ordering::Relaxed) {
-                break;
+    async fn parse_host(stream: &mut TcpStream, atype: u8) -> std::io::Result<String> {
+        let host = match atype {
+            ADDR_TYPE_IPV4 => {
+                let mut octets = [0u8; 4];
+                stream.read_exact(&mut octets).await?;
+                let port = stream.read_u16().await?;
+                format!(
+                    "{}.{}.{}.{}:{}",
+                    octets[0], octets[1], octets[2], octets[3], port
+                )
             }
-
-            let result =
-                io::timeout(Duration::from_millis(100), udp.socket.recv_from(&mut buf)).await;
-
-            match result {
-                Ok((n, source)) => {
-                    if !send_addr {
-                        let _ = udp.tx.send(source).await;
-                        send_addr = true;
-                    }
-
-                    if let Some((data, dst_addr)) = unpack_socks5_udp_request(&buf[0..n]) {
-                        let packed = udp_packer.pack_udp_data(&data, &dst_addr);
-                        write_port.write(packed).await;
-                    }
-                }
-
-                Err(_) => {}
+            ADDR_TYPE_DOMAIN => {
+                let len = stream.read_u8().await?;
+                let mut domain = vec![0u8; len as usize];
+                stream.read_exact(&mut domain).await?;
+                let port = stream.read_u16().await?;
+                let host = String::from_utf8(domain)
+                    .map_err(|_| Error::new(ErrorKind::Other, "Domain is invalid"))?;
+                format!("{}:{}", host, port)
             }
-        }
-
-        if !send_addr {
-            let dummy = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from(0), 0));
-            let _ = udp.tx.send(dummy).await;
-        }
-        write_port.close().await;
-    }
-
-    async fn udp_proxy_tunnel_write(&self, mut read_port: TunnelReadPort) {
-        let mut udp_unpacker = UdpDataUnpacker::new();
-        let udp = self.udp.as_ref().unwrap();
-        let client_addr = match udp.rx.recv().await {
-            Ok(addr) => addr,
-            Err(_) => return,
+            ADDR_TYPE_IPV6 => {
+                let error = format!("IPv6 address is not support");
+                return Err(Error::new(ErrorKind::Other, error));
+            }
+            addr_type => {
+                let error = format!("Unsupport SOCKS5 addr type {}", addr_type);
+                return Err(Error::new(ErrorKind::Other, error));
+            }
         };
 
-        loop {
-            if !udp.alive.load(Ordering::Relaxed) {
-                break;
-            }
+        Ok(host)
+    }
+}
 
-            let udp_data = match read_port.read().await {
-                TunnelPortMsg::Data(buf) => {
-                    udp_unpacker.append_data(buf);
-                    udp_unpacker.unpack_udp_data()
+pub struct Socks5TcpStream {
+    stream: TcpStream,
+}
+
+impl Socks5TcpStream {
+    fn new(stream: TcpStream) -> Self {
+        Self { stream }
+    }
+
+    pub async fn copy_bidirectional_tcp_stream(
+        &mut self,
+        other: &mut TcpStream,
+    ) -> std::io::Result<(u64, u64)> {
+        Socks5Proxy::reply(&mut self.stream, true, other.local_addr().unwrap()).await?;
+        copy_bidirectional(&mut self.stream, other).await
+    }
+}
+
+pub struct Socks5UdpSocket {
+    socket: UdpSocket,
+}
+
+impl Socks5UdpSocket {
+    async fn new() -> std::io::Result<Self> {
+        let socket = UdpSocket::bind("0.0.0.0:0").await?;
+        Ok(Self { socket })
+    }
+
+    async fn send(
+        &self,
+        buf: &mut [u8],
+        range: Range<usize>,
+        from: SocketAddr,
+        to: SocketAddr,
+    ) -> std::io::Result<usize> {
+        let addr = Socks5Addr::IPv4(from);
+        addr.to_slice(&mut buf[..range.start])
+            .map_err(|_| Error::new(ErrorKind::Other, "SOCKS5 addr error"))?;
+        self.socket.send_to(&buf[..range.end], to).await
+    }
+
+    async fn recv(
+        &self,
+        buf: &mut [u8],
+    ) -> std::io::Result<(Range<usize>, SocketAddr, SocketAddr)> {
+        let (size, from) = self.socket.recv_from(&mut buf[..]).await?;
+        if let (Socks5Addr::IPv4(to), n) = Socks5Addr::parse(&buf[..size])
+            .map_err(|_| Error::new(ErrorKind::Other, "Parse SOCKS5 udp packet error"))?
+        {
+            Ok((n..size, from, to))
+        } else {
+            Err(Error::new(
+                ErrorKind::Other,
+                "SOCKS5 addr from udp packet is not IPv4",
+            ))
+        }
+    }
+
+    pub async fn copy_bidirectional_udp_socket(
+        self,
+        other: UdpSocket,
+        mut holder: TcpStream,
+    ) -> std::io::Result<(u64, u64)> {
+        let inbound1 = Arc::new(self);
+        let outbound1 = Arc::new(other);
+        let inbound2 = inbound1.clone();
+        let outbound2 = outbound1.clone();
+        let (tx, rx) = oneshot::channel();
+
+        let (fut1, handle1) = abortable(async move {
+            let mut buf = [0u8; 1500];
+            let from1 = match inbound1.recv(&mut buf).await {
+                Ok((range, from, to)) => {
+                    let _ = outbound1.send_to(&buf[range], to).await;
+                    info!("SOCKS5 UDP from {}", from);
+                    from
                 }
-                _ => break,
+                Err(e) => {
+                    error!("SOCKS5 UDP recv error {}", e);
+                    return;
+                }
             };
 
-            if let Some((data, source)) = udp_data {
-                if let Some(buf) = pack_socks5_udp_request(&data, &source) {
-                    let _ = udp.socket.send_to(&buf, client_addr).await;
+            match tx.send(from1) {
+                Ok(_) => {}
+                Err(_) => return,
+            }
+
+            loop {
+                match inbound1.recv(&mut buf).await {
+                    Ok((range, from2, to)) => {
+                        if from1 == from2 {
+                            let _ = outbound1.send_to(&buf[range], to).await;
+                        } else {
+                            error!("SOCKS5 UDP from addr not match {} != {}", from1, from2);
+                        }
+                    }
+                    Err(e) => {
+                        error!("SOCKS5 UDP recv from {} error {}", from1, e);
+                    }
                 }
             }
-        }
+        });
 
-        read_port.drain();
-    }
+        let (fut2, handle2) = abortable(async move {
+            let to = match rx.await {
+                Ok(to) => to,
+                Err(_) => return,
+            };
 
-    async fn udp_proxy_connection_holder(&self, stream: &mut &TcpStream) {
-        let mut buf = [0; 1024];
+            let start = SOCKS5_IPV4_ADDR_LEN;
+            let mut buf = [0u8; 1500];
+            loop {
+                match outbound2.recv_from(&mut buf[start..]).await {
+                    Ok((size, from)) => {
+                        match inbound2.send(&mut buf, start..start + size, from, to).await {
+                            Ok(_) => {}
+                            Err(e) => {
+                                error!("SOCKS5 UDP from {} to {} error {}", from, to, e);
+                            }
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+        });
+
+        tokio::spawn(fut1);
+        tokio::spawn(fut2);
 
         loop {
-            match stream.read(&mut buf).await {
-                Ok(0) => break,
+            let mut buf = [0u8; 1024];
+            match holder.read(&mut buf).await {
+                Ok(0) | Err(_) => {
+                    handle1.abort();
+                    handle2.abort();
+                    break;
+                }
                 Ok(_) => {}
-                Err(_) => break,
             }
         }
 
-        self.udp
-            .as_ref()
-            .unwrap()
-            .alive
-            .store(false, Ordering::Relaxed);
+        Ok((0, 0))
     }
-}
-
-fn pack_socks5_udp_request(data: &[u8], addr: &SocketAddr) -> Option<Vec<u8>> {
-    match addr {
-        SocketAddr::V4(ipv4) => {
-            let mut buf = vec![0u8; 10 + data.len()];
-            buf[3] = ATYP_IPV4;
-            unsafe {
-                *(buf.as_ptr().offset(4) as *mut u32) = u32::from(ipv4.ip().clone()).to_be();
-                *(buf.as_ptr().offset(8) as *mut u16) = ipv4.port().to_be();
-            }
-
-            buf[10..].copy_from_slice(data);
-            return Some(buf);
-        }
-
-        _ => return None,
-    }
-}
-
-fn unpack_socks5_udp_request(buf: &[u8]) -> Option<(Vec<u8>, SocketAddr)> {
-    if buf.len() < 10 {
-        return None;
-    }
-
-    if buf[3] != ATYP_IPV4 {
-        return None;
-    }
-
-    let ipv4_addr = &buf[4..10];
-    let ipv4 = unsafe { *(ipv4_addr.as_ptr() as *const u32) };
-    let port = unsafe { *(ipv4_addr.as_ptr().offset(4) as *const u16) };
-    let addr = SocketAddr::V4(SocketAddrV4::new(
-        Ipv4Addr::from(u32::from_be(ipv4)),
-        u16::from_be(port),
-    ));
-
-    let data = &buf[10..];
-    return Some((data.iter().cloned().collect(), addr));
-}
-
-async fn destination_unreached(stream: &mut TcpStream) -> std::io::Result<()> {
-    let bind_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
-    destination_result(stream, bind_addr, REP_FAILURE).await
-}
-
-async fn destination_connected(
-    stream: &mut TcpStream,
-    bind_addr: SocketAddr,
-) -> std::io::Result<()> {
-    destination_result(stream, bind_addr, REP_SUCCESS).await
-}
-
-async fn choose_method(stream: &mut TcpStream, method: u8) -> std::io::Result<()> {
-    let buf = [VER, method];
-    stream.write_all(&buf).await
-}
-
-async fn destination_result(
-    stream: &mut TcpStream,
-    bind_addr: SocketAddr,
-    rsp: u8,
-) -> std::io::Result<()> {
-    match bind_addr {
-        SocketAddr::V4(ipv4) => {
-            let mut buf = [0u8; 10];
-
-            buf[0] = VER;
-            buf[1] = rsp;
-            buf[2] = RSV;
-            buf[3] = ATYP_IPV4;
-            unsafe {
-                *(buf.as_ptr().offset(4) as *mut u32) = u32::from(ipv4.ip().clone()).to_be();
-                *(buf.as_ptr().offset(8) as *mut u16) = ipv4.port().to_be();
-            }
-
-            stream.write_all(&buf).await?
-        }
-
-        SocketAddr::V6(ipv6) => {
-            let mut buf = [0u8; 22];
-
-            buf[0] = VER;
-            buf[1] = rsp;
-            buf[2] = RSV;
-            buf[3] = ATYP_IPV6;
-            unsafe {
-                *(buf.as_ptr().offset(4) as *mut u128) = u128::from(ipv6.ip().clone()).to_be();
-                *(buf.as_ptr().offset(20) as *mut u16) = ipv6.port().to_be();
-            }
-
-            stream.write_all(&buf).await?
-        }
-    }
-
-    Ok(())
 }
