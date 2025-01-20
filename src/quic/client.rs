@@ -17,20 +17,21 @@ pub struct Config {
 pub fn new(config: &Config) -> std::io::Result<Endpoint> {
     let cert = CertificateDer::from_pem_file(&config.cert).map_err(|error| match error {
         pem::Error::Io(e) => return e,
-        _ => return std::io::Error::new(std::io::ErrorKind::Other, error.to_string()),
+        _ => return std::io::Error::new(std::io::ErrorKind::Other, error),
     })?;
 
     let mut certs = rustls::RootCertStore::empty();
     certs
         .add(cert)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error.to_string()))?;
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
 
     let client_config = ClientConfig::with_root_certificates(Arc::new(certs))
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error.to_string()))?;
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
 
-    let addr: SocketAddr = config.addr.parse().map_err(|error: AddrParseError| {
-        std::io::Error::new(std::io::ErrorKind::Other, error.to_string())
-    })?;
+    let addr: SocketAddr = config
+        .addr
+        .parse()
+        .map_err(|error: AddrParseError| std::io::Error::new(std::io::ErrorKind::Other, error))?;
 
     let mut endpoint = Endpoint::client(addr)?;
     endpoint.set_default_client_config(client_config);

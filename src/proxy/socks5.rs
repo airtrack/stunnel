@@ -5,10 +5,10 @@ use std::{
     sync::Arc,
 };
 
-use futures::future::abortable;
+use futures::future;
 use log::{error, info};
 use tokio::{
-    io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt},
+    io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpStream, UdpSocket},
     sync::oneshot,
 };
@@ -219,12 +219,28 @@ impl Socks5TcpStream {
         Self { stream }
     }
 
-    pub async fn copy_bidirectional_tcp_stream(
+    pub async fn connect_ok(&mut self, bind: SocketAddr) -> std::io::Result<()> {
+        Socks5Proxy::reply(&mut self.stream, true, bind).await
+    }
+
+    pub async fn connect_err(&mut self) -> std::io::Result<()> {
+        Socks5Proxy::reply(&mut self.stream, false, "0.0.0.0:0".parse().unwrap()).await?;
+        self.stream.shutdown().await
+    }
+
+    pub async fn copy_bidirectional<R, W>(
         &mut self,
-        other: &mut TcpStream,
-    ) -> std::io::Result<(u64, u64)> {
-        Socks5Proxy::reply(&mut self.stream, true, other.local_addr().unwrap()).await?;
-        copy_bidirectional(&mut self.stream, other).await
+        reader: &mut R,
+        writer: &mut W,
+    ) -> std::io::Result<(u64, u64)>
+    where
+        R: AsyncRead + Unpin,
+        W: AsyncWrite + Unpin,
+    {
+        let (mut read_half, mut write_half) = self.stream.split();
+        let r = io::copy(&mut read_half, writer);
+        let w = io::copy(reader, &mut write_half);
+        future::try_join(r, w).await
     }
 }
 
@@ -256,15 +272,15 @@ impl Socks5UdpSocket {
         buf: &mut [u8],
     ) -> std::io::Result<(Range<usize>, SocketAddr, SocketAddr)> {
         let (size, from) = self.socket.recv_from(&mut buf[..]).await?;
-        if let (Socks5Addr::IPv4(to), n) = Socks5Addr::parse(&buf[..size])
-            .map_err(|_| Error::new(ErrorKind::Other, "Parse SOCKS5 udp packet error"))?
-        {
-            Ok((n..size, from, to))
-        } else {
-            Err(Error::new(
+        let (addr, n) = Socks5Addr::parse(&buf[..size])
+            .map_err(|_| Error::new(ErrorKind::Other, "Parse SOCKS5 udp packet error"))?;
+
+        match addr {
+            Socks5Addr::IPv4(to) => Ok((n..size, from, to)),
+            Socks5Addr::Host(host) => Err(Error::new(
                 ErrorKind::Other,
-                "SOCKS5 addr from udp packet is not IPv4",
-            ))
+                format!("SOCKS5 addr {} from udp packet is not IPv4", host),
+            )),
         }
     }
 
@@ -279,7 +295,7 @@ impl Socks5UdpSocket {
         let outbound2 = outbound1.clone();
         let (tx, rx) = oneshot::channel();
 
-        let (fut1, handle1) = abortable(async move {
+        let (fut1, handle1) = future::abortable(async move {
             let mut buf = [0u8; 1500];
             let from1 = match inbound1.recv(&mut buf).await {
                 Ok((range, from, to)) => {
@@ -314,7 +330,7 @@ impl Socks5UdpSocket {
             }
         });
 
-        let (fut2, handle2) = abortable(async move {
+        let (fut2, handle2) = future::abortable(async move {
             let to = match rx.await {
                 Ok(to) => to,
                 Err(_) => return,
