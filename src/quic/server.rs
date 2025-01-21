@@ -1,4 +1,7 @@
-use std::net::{AddrParseError, SocketAddr};
+use std::{
+    net::{AddrParseError, SocketAddr},
+    sync::Arc,
+};
 
 use quinn::{Endpoint, ServerConfig};
 use rustls::pki_types::{
@@ -23,8 +26,10 @@ pub fn new(config: &Config) -> std::io::Result<Endpoint> {
         _ => return std::io::Error::new(std::io::ErrorKind::Other, error),
     })?;
 
-    let server_config = ServerConfig::with_single_cert(vec![cert], priv_key.into())
+    let mut server_config = ServerConfig::with_single_cert(vec![cert], priv_key.into())
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+    let transport = Arc::get_mut(&mut server_config.transport).unwrap();
+    transport.max_concurrent_bidi_streams(10000u32.into());
 
     let addr: SocketAddr = config
         .addr
