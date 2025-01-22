@@ -1,11 +1,10 @@
 #[macro_use]
 extern crate log;
 
-use futures::future;
 use quinn::{Connection, RecvStream, SendStream};
-use stunnel::quic::server;
+use stunnel::{proxy::copy_bidirectional, quic::server};
 use tokio::{
-    io::{self, AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     runtime::Runtime,
 };
@@ -22,11 +21,7 @@ async fn handle_stream(mut send: SendStream, mut recv: RecvStream) -> std::io::R
         let addr = stream.local_addr()?.to_string();
         send.write_u8(addr.len() as u8).await?;
         send.write_all(addr.as_bytes()).await?;
-
-        let (mut read_half, mut write_half) = stream.split();
-        let r = io::copy(&mut recv, &mut write_half);
-        let w = io::copy(&mut read_half, &mut send);
-        future::try_join(r, w).await
+        copy_bidirectional(&mut stream, &mut recv, &mut send).await
     } else {
         Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -39,8 +34,12 @@ async fn handle_conn(conn: Connection) -> std::io::Result<()> {
     loop {
         let (send, recv) = conn.accept_bi().await?;
         tokio::spawn(async move {
-            let result = handle_stream(send, recv).await;
-            info!("handle stream result: {:?}", result);
+            handle_stream(send, recv)
+                .await
+                .inspect_err(|error| {
+                    error!("handle stream error: {}", error);
+                })
+                .ok();
         });
     }
 }
@@ -65,11 +64,13 @@ fn main() {
 
         while let Some(incoming) = endpoint.accept().await {
             tokio::spawn(async move {
-                if let Ok(connecting) = incoming.accept() {
-                    if let Ok(conn) = connecting.await {
-                        let result = handle_conn(conn).await;
-                        info!("handle conn result: {:?}", result);
-                    }
+                if let Ok(conn) = incoming.await {
+                    handle_conn(conn)
+                        .await
+                        .inspect_err(|error| {
+                            error!("handle conn error: {}", error);
+                        })
+                        .ok();
                 }
             });
         }

@@ -51,26 +51,32 @@ async fn socks5_udp(
     Ok(())
 }
 
-async fn socks5(conn: Arc<Connection>) -> std::io::Result<()> {
-    let listener = TcpListener::bind("0.0.0.0:21080").await.unwrap();
-
+async fn socks5(listener: &TcpListener, conn: Arc<Connection>) -> std::io::Result<()> {
     while let Ok((stream, _)) = listener.accept().await {
         let conn = conn.clone();
 
         tokio::spawn(async move {
             match Socks5Proxy::accept(stream).await {
                 Ok(Socks5Proxy::Connect { mut stream, host }) => {
-                    let result = socks5_tcp(conn, &mut stream, &host).await;
-                    if result.is_err() {
-                        stream.connect_err().await.ok();
+                    match socks5_tcp(conn, &mut stream, &host).await {
+                        Ok(_) => {}
+                        Err(error) => {
+                            stream.connect_err().await.ok();
+                            error!("tcp socks5 to {}, error: {}", host, error);
+                        }
                     }
-                    info!("tcp socks5 to {}, result: {:?}", host, result);
                 }
                 Ok(Socks5Proxy::UdpAssociate { socket, holder }) => {
-                    let result = socks5_udp(conn, socket, holder).await;
-                    info!("udp socks5, result: {:?}", result);
+                    socks5_udp(conn, socket, holder)
+                        .await
+                        .inspect_err(|error| {
+                            error!("udp socks5 error: {}", error);
+                        })
+                        .ok();
                 }
-                Err(_) => {}
+                Err(error) => {
+                    error!("socks5 accept error: {}", error);
+                }
             }
         });
     }
@@ -84,22 +90,35 @@ fn main() {
         .filter_level(log::LevelFilter::Info)
         .parse_default_env()
         .init();
-
     info!("starting up");
 
     let rt = Runtime::new().unwrap();
+
     rt.block_on(async move {
+        let listener = TcpListener::bind("0.0.0.0:21080").await.unwrap();
+        let addr = "127.0.0.1:12345".parse().unwrap();
         let config = client::Config {
             addr: "0.0.0.0:0".to_string(),
             cert: "stunnel_cert.pem".to_string(),
         };
-        let endpoint = client::new(&config).unwrap();
-        let conn = endpoint
-            .connect("127.0.0.1:12345".parse().unwrap(), "stunnel")
-            .unwrap()
-            .await
-            .unwrap();
 
-        socks5(Arc::new(conn)).await.unwrap();
+        loop {
+            let endpoint = client::new(&config).unwrap();
+            let conn = endpoint.connect(addr, "stunnel").unwrap();
+
+            match conn.await {
+                Ok(conn) => {
+                    socks5(&listener, Arc::new(conn))
+                        .await
+                        .inspect_err(|error| {
+                            error!("socks5 error: {}", error);
+                        })
+                        .ok();
+                }
+                Err(error) => {
+                    error!("connect {} error: {}", addr, error);
+                }
+            }
+        }
     });
 }

@@ -8,7 +8,7 @@ use std::{
 use futures::future;
 use log::{error, info};
 use tokio::{
-    io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpStream, UdpSocket},
     sync::oneshot,
 };
@@ -237,10 +237,7 @@ impl Socks5TcpStream {
         R: AsyncRead + Unpin,
         W: AsyncWrite + Unpin,
     {
-        let (mut read_half, mut write_half) = self.stream.split();
-        let r = io::copy(&mut read_half, writer);
-        let w = io::copy(reader, &mut write_half);
-        future::try_join(r, w).await
+        super::copy_bidirectional(&mut self.stream, reader, writer).await
     }
 }
 
