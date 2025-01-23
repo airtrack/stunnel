@@ -1,8 +1,7 @@
-#[macro_use]
-extern crate log;
+use std::net::SocketAddr;
+use std::{env, fs};
 
-use std::{net::SocketAddr, sync::Arc};
-
+use log::{error, info};
 use quinn::Connection;
 use stunnel::{
     proxy::socks5::{Socks5Proxy, Socks5TcpStream, Socks5UdpSocket},
@@ -15,7 +14,7 @@ use tokio::{
 };
 
 async fn socks5_tcp(
-    conn: Arc<Connection>,
+    conn: Connection,
     stream: &mut Socks5TcpStream,
     host: &str,
 ) -> std::io::Result<(u64, u64)> {
@@ -44,15 +43,22 @@ async fn socks5_tcp(
 }
 
 async fn socks5_udp(
-    _conn: Arc<Connection>,
+    _conn: Connection,
     _socket: Socks5UdpSocket,
     _holder: TcpStream,
 ) -> std::io::Result<()> {
     Ok(())
 }
 
-async fn socks5(listener: &TcpListener, conn: Arc<Connection>) -> std::io::Result<()> {
+async fn socks5(listener: &TcpListener, conn: Connection) -> std::io::Result<()> {
     while let Ok((stream, _)) = listener.accept().await {
+        if let Some(error) = conn.close_reason() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                error,
+            ));
+        }
+
         let conn = conn.clone();
 
         tokio::spawn(async move {
@@ -84,7 +90,21 @@ async fn socks5(listener: &TcpListener, conn: Arc<Connection>) -> std::io::Resul
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+struct Config {
+    socks5_listen: String,
+    server_addr: String,
+    server_name: String,
+    server_cert: String,
+}
+
 fn main() {
+    let mut args = env::args();
+    if args.len() != 2 {
+        println!("Usage: {} config.toml", args.nth(0).unwrap());
+        return;
+    }
+
     env_logger::builder()
         .format_timestamp(None)
         .filter_level(log::LevelFilter::Info)
@@ -92,23 +112,25 @@ fn main() {
         .init();
     info!("starting up");
 
+    let content = String::from_utf8(fs::read(&args.nth(1).unwrap()).unwrap()).unwrap();
+    let config: Config = toml::from_str(&content).unwrap();
     let rt = Runtime::new().unwrap();
 
     rt.block_on(async move {
-        let listener = TcpListener::bind("0.0.0.0:21080").await.unwrap();
-        let addr = "127.0.0.1:12345".parse().unwrap();
-        let config = client::Config {
+        let listener = TcpListener::bind(config.socks5_listen).await.unwrap();
+        let addr = config.server_addr.parse().unwrap();
+        let client_config = client::Config {
             addr: "0.0.0.0:0".to_string(),
-            cert: "stunnel_cert.pem".to_string(),
+            cert: config.server_cert,
         };
 
         loop {
-            let endpoint = client::new(&config).unwrap();
-            let conn = endpoint.connect(addr, "stunnel").unwrap();
+            let endpoint = client::new(&client_config).unwrap();
+            let conn = endpoint.connect(addr, &config.server_name).unwrap();
 
             match conn.await {
                 Ok(conn) => {
-                    socks5(&listener, Arc::new(conn))
+                    socks5(&listener, conn)
                         .await
                         .inspect_err(|error| {
                             error!("socks5 error: {}", error);
