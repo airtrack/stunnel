@@ -6,15 +6,11 @@ use tokio::{
 pub mod http;
 pub mod socks5;
 
-pub async fn copy_bidirectional<R, W>(
+pub async fn copy_bidirectional<R: AsyncRead + Unpin + ?Sized, W: AsyncWrite + Unpin + ?Sized>(
     stream: &mut TcpStream,
     reader: &mut R,
     writer: &mut W,
-) -> std::io::Result<(u64, u64)>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
+) -> std::io::Result<(u64, u64)> {
     let (mut read_half, mut write_half) = stream.split();
 
     let r = async {

@@ -228,15 +228,14 @@ impl Socks5TcpStream {
         self.stream.shutdown().await
     }
 
-    pub async fn copy_bidirectional<R, W>(
+    pub async fn copy_bidirectional<
+        R: AsyncRead + Unpin + ?Sized,
+        W: AsyncWrite + Unpin + ?Sized,
+    >(
         &mut self,
         reader: &mut R,
         writer: &mut W,
-    ) -> std::io::Result<(u64, u64)>
-    where
-        R: AsyncRead + Unpin,
-        W: AsyncWrite + Unpin,
-    {
+    ) -> std::io::Result<(u64, u64)> {
         super::copy_bidirectional(&mut self.stream, reader, writer).await
     }
 }
