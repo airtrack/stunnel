@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use quinn::{Endpoint, ServerConfig};
+use quinn::{congestion, Endpoint, ServerConfig};
 use rustls::pki_types::{
     pem::{self, PemObject},
     CertificateDer, PrivateKeyDer,
@@ -26,7 +26,9 @@ pub fn new(config: &Config) -> std::io::Result<Endpoint> {
     let mut server_config = ServerConfig::with_single_cert(vec![cert], priv_key.into())
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
     let transport = Arc::get_mut(&mut server_config.transport).unwrap();
-    transport.max_concurrent_bidi_streams(10000u32.into());
+    transport
+        .max_concurrent_bidi_streams(10000u32.into())
+        .congestion_controller_factory(Arc::new(congestion::BbrConfig::default()));
 
     let addr = config
         .addr

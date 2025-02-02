@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use quinn::{ClientConfig, Endpoint, TransportConfig};
+use quinn::{congestion, ClientConfig, Endpoint, TransportConfig};
 use rustls::pki_types::{
     pem::{self, PemObject},
     CertificateDer,
@@ -28,7 +28,8 @@ pub fn new(config: &Config) -> std::io::Result<Endpoint> {
 
     transport
         .max_concurrent_bidi_streams(10000u32.into())
-        .keep_alive_interval(Some(Duration::from_secs(3)));
+        .keep_alive_interval(Some(Duration::from_secs(3)))
+        .congestion_controller_factory(Arc::new(congestion::BbrConfig::default()));
     client_config.transport_config(Arc::new(transport));
 
     let addr = config
