@@ -2,9 +2,9 @@ use std::{env, fs};
 
 use log::{error, info};
 use quinn::Connection;
-use stunnel::proxy::http::HttpProxy;
+use stunnel::proxy::{http::HttpProxy, socks5::Socks5Proxy};
+use stunnel::quic::client;
 use stunnel::tunnel::start_tcp_tunnel;
-use stunnel::{proxy::socks5::Socks5Proxy, quic::client};
 use tokio::{net::TcpListener, runtime::Runtime};
 
 async fn http(listener: &TcpListener, conn: Connection) -> std::io::Result<()> {
