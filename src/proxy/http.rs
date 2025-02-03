@@ -1,11 +1,17 @@
-use std::io::{Error, ErrorKind};
+use std::{
+    io::{Error, ErrorKind},
+    net::SocketAddr,
+};
 
+use async_trait::async_trait;
 use httparse::Status;
 use log::info;
 use tokio::{
-    io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
 };
+
+use super::TcpProxyConn;
 
 pub struct HttpProxy {
     stream: TcpStream,
@@ -121,25 +127,52 @@ impl HttpProxy {
         Err(Error::new(ErrorKind::Other, "proxy response too large"))
     }
 
-    pub async fn copy_bidirectional_tcp_stream(
+    pub async fn copy_bidirectional<
+        R: AsyncRead + Unpin + ?Sized,
+        W: AsyncWrite + Unpin + ?Sized,
+    >(
         &mut self,
-        other: &mut TcpStream,
+        reader: &mut R,
+        writer: &mut W,
     ) -> std::io::Result<(u64, u64)> {
         if let Some(ref request) = self.request {
-            other.write_all(request).await?;
-        } else {
-            self.response_200().await?;
+            writer.write_all(request).await?;
         }
-
-        copy_bidirectional(&mut self.stream, other).await
+        super::copy_bidirectional(&mut self.stream, reader, writer).await
     }
 
-    pub fn host(&self) -> &String {
+    pub async fn response_200(&mut self) -> std::io::Result<()> {
+        if self.request.is_some() {
+            Ok(())
+        } else {
+            const HTTP_200_OK: &str = "HTTP/1.1 200 OK\r\n\r\n";
+            self.stream.write_all(HTTP_200_OK.as_bytes()).await
+        }
+    }
+
+    pub fn host(&self) -> &str {
         &self.host
     }
+}
 
-    async fn response_200(&mut self) -> std::io::Result<()> {
-        const HTTP_200_OK: &str = "HTTP/1.1 200 OK\r\n\r\n";
-        self.stream.write_all(HTTP_200_OK.as_bytes()).await
+#[async_trait]
+impl TcpProxyConn for HttpProxy {
+    async fn response_connect_ok(&mut self, _bind: SocketAddr) -> std::io::Result<()> {
+        self.response_200().await
+    }
+
+    async fn response_connect_err(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    async fn copy_bidirectional<
+        R: AsyncRead + Send + Unpin + ?Sized,
+        W: AsyncWrite + Send + Unpin + ?Sized,
+    >(
+        &mut self,
+        reader: &mut R,
+        writer: &mut W,
+    ) -> std::io::Result<(u64, u64)> {
+        self.copy_bidirectional(reader, writer).await
     }
 }

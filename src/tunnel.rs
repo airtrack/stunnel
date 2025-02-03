@@ -6,7 +6,7 @@ use tokio::{
     net::TcpStream,
 };
 
-use crate::proxy::{copy_bidirectional, socks5::Socks5TcpStream};
+use crate::proxy::{copy_bidirectional, TcpProxyConn};
 
 pub struct TunnelConn<S: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> {
     s: S,
@@ -39,24 +39,32 @@ impl IntoTunnel<quinn::SendStream, quinn::RecvStream> for quinn::Connection {
     }
 }
 
-pub async fn handle_socks5_tcp<S: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin>(
+pub async fn start_tcp_tunnel<
+    S: AsyncWrite + Send + Unpin,
+    R: AsyncRead + Send + Unpin,
+    T: TcpProxyConn,
+>(
     into: impl IntoTunnel<S, R>,
     host: &str,
-    stream: &mut Socks5TcpStream,
+    stream: &mut T,
 ) -> std::io::Result<(u64, u64)> {
-    match handle_socks5_tcp_tunnel(into, host, stream).await {
+    match run_tcp_tunnel(into, host, stream).await {
         Ok(r) => Ok(r),
         Err(e) => {
-            stream.connect_err().await.ok();
+            stream.response_connect_err().await.ok();
             Err(e)
         }
     }
 }
 
-async fn handle_socks5_tcp_tunnel<S: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin>(
+async fn run_tcp_tunnel<
+    S: AsyncWrite + Send + Unpin,
+    R: AsyncRead + Send + Unpin,
+    T: TcpProxyConn,
+>(
     into: impl IntoTunnel<S, R>,
     host: &str,
-    stream: &mut Socks5TcpStream,
+    stream: &mut T,
 ) -> std::io::Result<(u64, u64)> {
     let mut conn = into.into_tcp_tunnel().await?;
     let (writer, reader) = conn.split();
@@ -75,7 +83,7 @@ async fn handle_socks5_tcp_tunnel<S: AsyncWrite + Send + Unpin, R: AsyncRead + S
         .ok()
         .and_then(|addr| addr.parse::<SocketAddr>().ok())
     {
-        stream.connect_ok(bind).await?;
+        stream.response_connect_ok(bind).await?;
         stream.copy_bidirectional(reader, writer).await
     } else {
         Err(std::io::Error::new(

@@ -5,6 +5,7 @@ use std::{
     sync::Arc,
 };
 
+use async_trait::async_trait;
 use futures::future;
 use log::{error, info};
 use tokio::{
@@ -12,6 +13,8 @@ use tokio::{
     net::{TcpStream, UdpSocket},
     sync::oneshot,
 };
+
+use super::TcpProxyConn;
 
 const SOCKS5_VER: u8 = 5;
 const METHOD_NO_AUTH: u8 = 0;
@@ -237,6 +240,28 @@ impl Socks5TcpStream {
         writer: &mut W,
     ) -> std::io::Result<(u64, u64)> {
         super::copy_bidirectional(&mut self.stream, reader, writer).await
+    }
+}
+
+#[async_trait]
+impl TcpProxyConn for Socks5TcpStream {
+    async fn response_connect_ok(&mut self, bind: SocketAddr) -> std::io::Result<()> {
+        self.connect_ok(bind).await
+    }
+
+    async fn response_connect_err(&mut self) -> std::io::Result<()> {
+        self.connect_err().await
+    }
+
+    async fn copy_bidirectional<
+        R: AsyncRead + Send + Unpin + ?Sized,
+        W: AsyncWrite + Send + Unpin + ?Sized,
+    >(
+        &mut self,
+        reader: &mut R,
+        writer: &mut W,
+    ) -> std::io::Result<(u64, u64)> {
+        self.copy_bidirectional(reader, writer).await
     }
 }
 

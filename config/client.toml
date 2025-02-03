@@ -1,4 +1,5 @@
 socks5_listen = "0.0.0.0:21080"
+http_listen = "0.0.0.0:28080"
 server_addr = "127.0.0.1:12345"
 server_name = "stunnel"
 server_cert = "stunnel_cert.pem"

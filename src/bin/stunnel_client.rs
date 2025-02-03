@@ -2,9 +2,42 @@ use std::{env, fs};
 
 use log::{error, info};
 use quinn::Connection;
-use stunnel::tunnel::handle_socks5_tcp;
+use stunnel::proxy::http::HttpProxy;
+use stunnel::tunnel::start_tcp_tunnel;
 use stunnel::{proxy::socks5::Socks5Proxy, quic::client};
 use tokio::{net::TcpListener, runtime::Runtime};
+
+async fn http(listener: &TcpListener, conn: Connection) -> std::io::Result<()> {
+    while let Ok((stream, _)) = listener.accept().await {
+        if let Some(error) = conn.close_reason() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                error,
+            ));
+        }
+
+        let conn = conn.clone();
+
+        tokio::spawn(async move {
+            match HttpProxy::accept(stream).await {
+                Ok(mut stream) => {
+                    let host = stream.host().to_string();
+                    start_tcp_tunnel(conn, &host, &mut stream)
+                        .await
+                        .inspect_err(|error| {
+                            error!("tcp http to {}, error: {}", host, error);
+                        })
+                        .ok();
+                }
+                Err(error) => {
+                    error!("http accept error: {}", error);
+                }
+            }
+        });
+    }
+
+    Ok(())
+}
 
 async fn socks5(listener: &TcpListener, conn: Connection) -> std::io::Result<()> {
     while let Ok((stream, _)) = listener.accept().await {
@@ -20,7 +53,7 @@ async fn socks5(listener: &TcpListener, conn: Connection) -> std::io::Result<()>
         tokio::spawn(async move {
             match Socks5Proxy::accept(stream).await {
                 Ok(Socks5Proxy::Connect { mut stream, host }) => {
-                    handle_socks5_tcp(conn, &host, &mut stream)
+                    start_tcp_tunnel(conn, &host, &mut stream)
                         .await
                         .inspect_err(|error| {
                             error!("tcp socks5 to {}, error: {}", host, error);
@@ -43,6 +76,7 @@ async fn socks5(listener: &TcpListener, conn: Connection) -> std::io::Result<()>
 #[derive(serde::Deserialize)]
 struct Config {
     socks5_listen: String,
+    http_listen: String,
     server_addr: String,
     server_name: String,
     server_cert: String,
@@ -67,7 +101,8 @@ fn main() {
     let rt = Runtime::new().unwrap();
 
     rt.block_on(async move {
-        let listener = TcpListener::bind(config.socks5_listen).await.unwrap();
+        let socks5_listener = TcpListener::bind(config.socks5_listen).await.unwrap();
+        let http_listener = TcpListener::bind(config.http_listen).await.unwrap();
         let addr = config.server_addr.parse().unwrap();
         let client_config = client::Config {
             addr: "0.0.0.0:0".to_string(),
@@ -80,10 +115,12 @@ fn main() {
 
             match conn.await {
                 Ok(conn) => {
-                    socks5(&listener, conn)
-                        .await
+                    let h = http(&http_listener, conn.clone());
+                    let s = socks5(&socks5_listener, conn);
+
+                    futures::try_join!(h, s)
                         .inspect_err(|error| {
-                            error!("socks5 error: {}", error);
+                            error!("tunnel error: {}", error);
                         })
                         .ok();
                 }
