@@ -5,7 +5,6 @@ use std::{
 
 use async_trait::async_trait;
 use httparse::Status;
-use log::info;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
@@ -115,7 +114,6 @@ impl HttpProxy {
                     return Err(Error::new(ErrorKind::Other, error));
                 }
                 Ok(Status::Partial) => {
-                    info!("parse HTTP response partial, len: {}", len);
                     continue;
                 }
                 Err(_) => {

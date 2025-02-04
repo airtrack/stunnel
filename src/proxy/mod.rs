@@ -1,9 +1,9 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
 use async_trait::async_trait;
 use tokio::{
     io::{self, AsyncRead, AsyncWrite, AsyncWriteExt},
-    net::TcpStream,
+    net::{TcpStream, UdpSocket},
 };
 
 pub mod http;
@@ -21,6 +21,30 @@ pub trait TcpProxyConn {
         reader: &mut R,
         writer: &mut W,
     ) -> std::io::Result<(u64, u64)>;
+}
+
+#[async_trait]
+pub trait UdpProxyBind {
+    async fn response_bind_ok(&mut self) -> std::io::Result<()>;
+    async fn response_bind_err(&mut self) -> std::io::Result<()>;
+    async fn copy_bidirectional(self, other: impl DatagramRw + Send) -> std::io::Result<()>;
+}
+
+#[async_trait]
+pub trait DatagramRw: Clone {
+    async fn send(&self, buf: &[u8], target: SocketAddr) -> std::io::Result<usize>;
+    async fn recv(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)>;
+}
+
+#[async_trait]
+impl DatagramRw for Arc<UdpSocket> {
+    async fn send(&self, buf: &[u8], target: SocketAddr) -> std::io::Result<usize> {
+        self.send_to(buf, target).await
+    }
+
+    async fn recv(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+        self.recv_from(buf).await
+    }
 }
 
 pub async fn copy_bidirectional<R: AsyncRead + Unpin + ?Sized, W: AsyncWrite + Unpin + ?Sized>(

@@ -2,19 +2,16 @@ use std::{
     io::{Error, ErrorKind},
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     ops::Range,
-    sync::Arc,
 };
 
 use async_trait::async_trait;
-use futures::future;
-use log::{error, info};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpStream, UdpSocket},
-    sync::oneshot,
+    sync::oneshot::{self, Receiver, Sender},
 };
 
-use super::TcpProxyConn;
+use super::{DatagramRw, TcpProxyConn, UdpProxyBind};
 
 const SOCKS5_VER: u8 = 5;
 const METHOD_NO_AUTH: u8 = 0;
@@ -98,7 +95,6 @@ pub enum Socks5Proxy {
     },
     UdpAssociate {
         socket: Socks5UdpSocket,
-        holder: TcpStream,
     },
 }
 
@@ -171,12 +167,8 @@ impl Socks5Proxy {
 
     async fn accept_udp_associate(mut stream: TcpStream, atype: u8) -> std::io::Result<Self> {
         let _ = Self::parse_host(&mut stream, atype).await?;
-        let socket = Socks5UdpSocket::new().await?;
-        Self::reply(&mut stream, true, socket.socket.local_addr().unwrap()).await?;
-        Ok(Self::UdpAssociate {
-            socket,
-            holder: stream,
-        })
+        let socket = Socks5UdpSocket::new(stream).await?;
+        Ok(Self::UdpAssociate { socket })
     }
 
     async fn parse_host(stream: &mut TcpStream, atype: u8) -> std::io::Result<String> {
@@ -267,12 +259,59 @@ impl TcpProxyConn for Socks5TcpStream {
 
 pub struct Socks5UdpSocket {
     socket: UdpSocket,
+    holder: Option<TcpStream>,
 }
 
 impl Socks5UdpSocket {
-    async fn new() -> std::io::Result<Self> {
+    async fn new(holder: TcpStream) -> std::io::Result<Self> {
         let socket = UdpSocket::bind("0.0.0.0:0").await?;
-        Ok(Self { socket })
+        Ok(Self {
+            socket,
+            holder: Some(holder),
+        })
+    }
+
+    fn split(self) -> (Self, TcpStream) {
+        (
+            Self {
+                socket: self.socket,
+                holder: None,
+            },
+            self.holder.unwrap(),
+        )
+    }
+
+    pub async fn associate_ok(&mut self) -> std::io::Result<()> {
+        Socks5Proxy::reply(
+            self.holder.as_mut().unwrap(),
+            true,
+            self.socket.local_addr().unwrap(),
+        )
+        .await
+    }
+
+    pub async fn associate_err(&mut self) -> std::io::Result<()> {
+        Socks5Proxy::reply(
+            self.holder.as_mut().unwrap(),
+            false,
+            "0.0.0.0:0".parse().unwrap(),
+        )
+        .await?;
+        self.holder.as_mut().unwrap().shutdown().await
+    }
+
+    pub async fn copy_bidirectional(self, other: impl DatagramRw) -> std::io::Result<()> {
+        let outbound1 = other;
+        let outbound2 = outbound1.clone();
+        let (tx, rx) = oneshot::channel();
+        let (this, holder) = self.split();
+
+        let to = this.copy_to(outbound1, tx);
+        let from = this.copy_from(outbound2, rx);
+        let holder = Self::copy_holder(holder);
+
+        futures::try_join!(to, from, holder)?;
+        Ok(())
     }
 
     async fn send(
@@ -305,90 +344,68 @@ impl Socks5UdpSocket {
         }
     }
 
-    pub async fn copy_bidirectional_udp_socket(
-        self,
-        other: UdpSocket,
-        mut holder: TcpStream,
-    ) -> std::io::Result<(u64, u64)> {
-        let inbound1 = Arc::new(self);
-        let outbound1 = Arc::new(other);
-        let inbound2 = inbound1.clone();
-        let outbound2 = outbound1.clone();
-        let (tx, rx) = oneshot::channel();
+    async fn copy_to(
+        &self,
+        outbound1: impl DatagramRw,
+        tx: Sender<SocketAddr>,
+    ) -> std::io::Result<()> {
+        let mut buf = [0u8; 1500];
+        let (range, from1, to) = self.recv(&mut buf).await?;
+        outbound1.send(&buf[range], to).await.ok();
 
-        let (fut1, handle1) = future::abortable(async move {
-            let mut buf = [0u8; 1500];
-            let from1 = match inbound1.recv(&mut buf).await {
-                Ok((range, from, to)) => {
-                    let _ = outbound1.send_to(&buf[range], to).await;
-                    info!("SOCKS5 UDP from {}", from);
-                    from
-                }
-                Err(e) => {
-                    error!("SOCKS5 UDP recv error {}", e);
-                    return;
-                }
-            };
-
-            match tx.send(from1) {
-                Ok(_) => {}
-                Err(_) => return,
-            }
-
-            loop {
-                match inbound1.recv(&mut buf).await {
-                    Ok((range, from2, to)) => {
-                        if from1 == from2 {
-                            let _ = outbound1.send_to(&buf[range], to).await;
-                        } else {
-                            error!("SOCKS5 UDP from addr not match {} != {}", from1, from2);
-                        }
-                    }
-                    Err(e) => {
-                        error!("SOCKS5 UDP recv from {} error {}", from1, e);
-                    }
-                }
-            }
-        });
-
-        let (fut2, handle2) = future::abortable(async move {
-            let to = match rx.await {
-                Ok(to) => to,
-                Err(_) => return,
-            };
-
-            let start = SOCKS5_IPV4_ADDR_LEN;
-            let mut buf = [0u8; 1500];
-            loop {
-                match outbound2.recv_from(&mut buf[start..]).await {
-                    Ok((size, from)) => {
-                        match inbound2.send(&mut buf, start..start + size, from, to).await {
-                            Ok(_) => {}
-                            Err(e) => {
-                                error!("SOCKS5 UDP from {} to {} error {}", from, to, e);
-                            }
-                        }
-                    }
-                    Err(_) => {}
-                }
-            }
-        });
-
-        tokio::spawn(fut1);
-        tokio::spawn(fut2);
+        tx.send(from1)
+            .map_err(|_| Error::new(ErrorKind::Other, "Send addr error"))?;
 
         loop {
-            let mut buf = [0u8; 1024];
-            match holder.read(&mut buf).await {
-                Ok(0) | Err(_) => {
-                    handle1.abort();
-                    handle2.abort();
-                    break;
-                }
-                Ok(_) => {}
+            let (range, from2, to) = self.recv(&mut buf).await?;
+            if from1 == from2 {
+                outbound1.send(&buf[range], to).await.ok();
             }
         }
+    }
 
-        Ok((0, 0))
+    async fn copy_from(
+        &self,
+        outbound2: impl DatagramRw,
+        rx: Receiver<SocketAddr>,
+    ) -> std::io::Result<()> {
+        let to = rx
+            .await
+            .map_err(|error| Error::new(ErrorKind::Other, error))?;
+
+        const START: usize = SOCKS5_IPV4_ADDR_LEN;
+        let mut buf = [0u8; 1500];
+        loop {
+            let (size, from) = outbound2.recv(&mut buf[START..]).await?;
+            self.send(&mut buf, START..START + size, from, to).await?;
+        }
+    }
+
+    async fn copy_holder(mut holder: TcpStream) -> std::io::Result<()> {
+        let mut buf = [0u8; 1024];
+
+        loop {
+            if holder.read(&mut buf).await? == 0 {
+                return Err(Error::new(
+                    ErrorKind::ConnectionAborted,
+                    "Tcp holder disconnected",
+                ));
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl UdpProxyBind for Socks5UdpSocket {
+    async fn response_bind_ok(&mut self) -> std::io::Result<()> {
+        self.associate_ok().await
+    }
+
+    async fn response_bind_err(&mut self) -> std::io::Result<()> {
+        self.associate_err().await
+    }
+
+    async fn copy_bidirectional(self, other: impl DatagramRw + Send) -> std::io::Result<()> {
+        self.copy_bidirectional(other).await
     }
 }
