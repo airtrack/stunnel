@@ -10,16 +10,25 @@ use tokio::{
     net::TcpStream,
 };
 
-use super::TcpProxyConn;
+use super::{DatagramRw, Proxy, ProxyType, TcpProxyConn, UdpProxyBind};
 
-pub struct HttpProxy {
-    stream: TcpStream,
-    host: String,
-    request: Option<Vec<u8>>,
+#[derive(Clone, Copy)]
+pub struct HttpProxy;
+
+#[async_trait]
+impl Proxy<HttpTcpProxy, HttpNoUdp> for HttpProxy {
+    async fn accept(
+        &self,
+        stream: TcpStream,
+    ) -> std::io::Result<ProxyType<HttpTcpProxy, HttpNoUdp>> {
+        Self::accept(stream).await
+    }
 }
 
 impl HttpProxy {
-    pub async fn accept(mut stream: TcpStream) -> std::io::Result<Self> {
+    pub async fn accept(
+        mut stream: TcpStream,
+    ) -> std::io::Result<ProxyType<HttpTcpProxy, HttpNoUdp>> {
         let mut buf = vec![0u8; 1500];
         let mut len = 0;
 
@@ -50,11 +59,7 @@ impl HttpProxy {
                     return Err(Error::new(ErrorKind::Other, "CONNECT path empty"));
                 } else {
                     let host = req.path.unwrap().to_string();
-                    return Ok(Self {
-                        stream,
-                        host,
-                        request: None,
-                    });
+                    return Ok(ProxyType::Tcp(HttpTcpProxy::new(stream, host, None)));
                 }
             } else {
                 let mut host: String = String::default();
@@ -74,11 +79,7 @@ impl HttpProxy {
                 }
 
                 buf.truncate(len);
-                return Ok(Self {
-                    stream,
-                    host,
-                    request: Some(buf),
-                });
+                return Ok(ProxyType::Tcp(HttpTcpProxy::new(stream, host, Some(buf))));
             }
         }
 
@@ -124,6 +125,35 @@ impl HttpProxy {
 
         Err(Error::new(ErrorKind::Other, "proxy response too large"))
     }
+}
+
+pub struct HttpTcpProxy {
+    stream: TcpStream,
+    host: String,
+    request: Option<Vec<u8>>,
+}
+
+impl HttpTcpProxy {
+    fn new(stream: TcpStream, host: String, request: Option<Vec<u8>>) -> Self {
+        Self {
+            stream,
+            host,
+            request,
+        }
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub async fn response_200(&mut self) -> std::io::Result<()> {
+        if self.request.is_some() {
+            Ok(())
+        } else {
+            const HTTP_200_OK: &str = "HTTP/1.1 200 OK\r\n\r\n";
+            self.stream.write_all(HTTP_200_OK.as_bytes()).await
+        }
+    }
 
     pub async fn copy_bidirectional<
         R: AsyncRead + Unpin + ?Sized,
@@ -138,23 +168,14 @@ impl HttpProxy {
         }
         super::copy_bidirectional(&mut self.stream, reader, writer).await
     }
-
-    pub async fn response_200(&mut self) -> std::io::Result<()> {
-        if self.request.is_some() {
-            Ok(())
-        } else {
-            const HTTP_200_OK: &str = "HTTP/1.1 200 OK\r\n\r\n";
-            self.stream.write_all(HTTP_200_OK.as_bytes()).await
-        }
-    }
-
-    pub fn host(&self) -> &str {
-        &self.host
-    }
 }
 
 #[async_trait]
-impl TcpProxyConn for HttpProxy {
+impl TcpProxyConn for HttpTcpProxy {
+    fn target_host(&self) -> &str {
+        self.host()
+    }
+
     async fn response_connect_ok(&mut self, _bind: SocketAddr) -> std::io::Result<()> {
         self.response_200().await
     }
@@ -172,5 +193,22 @@ impl TcpProxyConn for HttpProxy {
         writer: &mut W,
     ) -> std::io::Result<(u64, u64)> {
         self.copy_bidirectional(reader, writer).await
+    }
+}
+
+pub struct HttpNoUdp;
+
+#[async_trait]
+impl UdpProxyBind for HttpNoUdp {
+    async fn response_bind_ok(&mut self) -> std::io::Result<()> {
+        panic!("not supported")
+    }
+
+    async fn response_bind_err(&mut self) -> std::io::Result<()> {
+        panic!("not supported")
+    }
+
+    async fn copy_bidirectional(self, _other: impl DatagramRw + Send) -> std::io::Result<()> {
+        panic!("not supported")
     }
 }

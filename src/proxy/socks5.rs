@@ -11,7 +11,7 @@ use tokio::{
     sync::oneshot::{self, Receiver, Sender},
 };
 
-use super::{DatagramRw, TcpProxyConn, UdpProxyBind};
+use super::{DatagramRw, Proxy, ProxyType, TcpProxyConn, UdpProxyBind};
 
 const SOCKS5_VER: u8 = 5;
 const METHOD_NO_AUTH: u8 = 0;
@@ -88,18 +88,23 @@ impl Socks5Addr {
     }
 }
 
-pub enum Socks5Proxy {
-    Connect {
-        stream: Socks5TcpStream,
-        host: String,
-    },
-    UdpAssociate {
-        socket: Socks5UdpSocket,
-    },
+#[derive(Clone, Copy)]
+pub struct Socks5Proxy;
+
+#[async_trait]
+impl Proxy<Socks5TcpStream, Socks5UdpSocket> for Socks5Proxy {
+    async fn accept(
+        &self,
+        stream: TcpStream,
+    ) -> std::io::Result<ProxyType<Socks5TcpStream, Socks5UdpSocket>> {
+        Ok(Self::accept(stream).await?)
+    }
 }
 
 impl Socks5Proxy {
-    pub async fn accept(mut stream: TcpStream) -> std::io::Result<Self> {
+    pub async fn accept(
+        mut stream: TcpStream,
+    ) -> std::io::Result<ProxyType<Socks5TcpStream, Socks5UdpSocket>> {
         Self::select_method(&mut stream).await?;
 
         let mut req = [0u8; 4];
@@ -159,16 +164,22 @@ impl Socks5Proxy {
         stream.write_all(&ack).await
     }
 
-    async fn accept_connect(mut stream: TcpStream, atype: u8) -> std::io::Result<Self> {
+    async fn accept_connect(
+        mut stream: TcpStream,
+        atype: u8,
+    ) -> std::io::Result<ProxyType<Socks5TcpStream, Socks5UdpSocket>> {
         let host = Self::parse_host(&mut stream, atype).await?;
-        let stream = Socks5TcpStream::new(stream);
-        Ok(Self::Connect { stream, host })
+        let stream = Socks5TcpStream::new(stream, host);
+        Ok(ProxyType::Tcp(stream))
     }
 
-    async fn accept_udp_associate(mut stream: TcpStream, atype: u8) -> std::io::Result<Self> {
-        let _ = Self::parse_host(&mut stream, atype).await?;
+    async fn accept_udp_associate(
+        mut stream: TcpStream,
+        atype: u8,
+    ) -> std::io::Result<ProxyType<Socks5TcpStream, Socks5UdpSocket>> {
+        Self::parse_host(&mut stream, atype).await?;
         let socket = Socks5UdpSocket::new(stream).await?;
-        Ok(Self::UdpAssociate { socket })
+        Ok(ProxyType::Udp(socket))
     }
 
     async fn parse_host(stream: &mut TcpStream, atype: u8) -> std::io::Result<String> {
@@ -207,11 +218,16 @@ impl Socks5Proxy {
 
 pub struct Socks5TcpStream {
     stream: TcpStream,
+    host: String,
 }
 
 impl Socks5TcpStream {
-    fn new(stream: TcpStream) -> Self {
-        Self { stream }
+    fn new(stream: TcpStream, host: String) -> Self {
+        Self { stream, host }
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
     }
 
     pub async fn connect_ok(&mut self, bind: SocketAddr) -> std::io::Result<()> {
@@ -237,6 +253,10 @@ impl Socks5TcpStream {
 
 #[async_trait]
 impl TcpProxyConn for Socks5TcpStream {
+    fn target_host(&self) -> &str {
+        self.host()
+    }
+
     async fn response_connect_ok(&mut self, bind: SocketAddr) -> std::io::Result<()> {
         self.connect_ok(bind).await
     }

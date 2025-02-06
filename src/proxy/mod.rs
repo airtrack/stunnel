@@ -9,8 +9,19 @@ use tokio::{
 pub mod http;
 pub mod socks5;
 
+pub enum ProxyType<T, U> {
+    Tcp(T),
+    Udp(U),
+}
+
+#[async_trait]
+pub trait Proxy<T: TcpProxyConn, U: UdpProxyBind> {
+    async fn accept(&self, stream: TcpStream) -> std::io::Result<ProxyType<T, U>>;
+}
+
 #[async_trait]
 pub trait TcpProxyConn {
+    fn target_host(&self) -> &str;
     async fn response_connect_ok(&mut self, bind: SocketAddr) -> std::io::Result<()>;
     async fn response_connect_err(&mut self) -> std::io::Result<()>;
     async fn copy_bidirectional<

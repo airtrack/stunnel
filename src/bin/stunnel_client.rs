@@ -3,11 +3,16 @@ use std::{env, fs};
 use log::{error, info};
 use quinn::Connection;
 use stunnel::proxy::{http::HttpProxy, socks5::Socks5Proxy};
+use stunnel::proxy::{Proxy, ProxyType, TcpProxyConn, UdpProxyBind};
 use stunnel::quic::client;
 use stunnel::tunnel::start_tcp_tunnel;
 use tokio::{net::TcpListener, runtime::Runtime};
 
-async fn http(listener: &TcpListener, conn: Connection) -> std::io::Result<()> {
+async fn proxy<T: TcpProxyConn + Send, U: UdpProxyBind + Send>(
+    proxy: impl Proxy<T, U> + Sync + Send + Copy + 'static,
+    listener: &TcpListener,
+    conn: Connection,
+) -> std::io::Result<()> {
     while let Ok((stream, _)) = listener.accept().await {
         if let Some(error) = conn.close_reason() {
             return Err(std::io::Error::new(
@@ -19,52 +24,21 @@ async fn http(listener: &TcpListener, conn: Connection) -> std::io::Result<()> {
         let conn = conn.clone();
 
         tokio::spawn(async move {
-            match HttpProxy::accept(stream).await {
-                Ok(mut stream) => {
-                    let host = stream.host().to_string();
-                    start_tcp_tunnel(conn, &host, &mut stream)
+            match proxy.accept(stream).await {
+                Ok(ProxyType::Tcp(mut stream)) => {
+                    let target = stream.target_host().to_string();
+                    start_tcp_tunnel(conn, &target, &mut stream)
                         .await
                         .inspect_err(|error| {
-                            error!("tcp http to {}, error: {}", host, error);
+                            error!("tcp to {}, error: {}", target, error);
                         })
                         .ok();
                 }
-                Err(error) => {
-                    error!("http accept error: {}", error);
-                }
-            }
-        });
-    }
-
-    Ok(())
-}
-
-async fn socks5(listener: &TcpListener, conn: Connection) -> std::io::Result<()> {
-    while let Ok((stream, _)) = listener.accept().await {
-        if let Some(error) = conn.close_reason() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::ConnectionReset,
-                error,
-            ));
-        }
-
-        let conn = conn.clone();
-
-        tokio::spawn(async move {
-            match Socks5Proxy::accept(stream).await {
-                Ok(Socks5Proxy::Connect { mut stream, host }) => {
-                    start_tcp_tunnel(conn, &host, &mut stream)
-                        .await
-                        .inspect_err(|error| {
-                            error!("tcp socks5 to {}, error: {}", host, error);
-                        })
-                        .ok();
-                }
-                Ok(_) => {
-                    error!("socks5 udp not implemented!");
+                Ok(ProxyType::Udp(_)) => {
+                    error!("udp not implemented!");
                 }
                 Err(error) => {
-                    error!("socks5 accept error: {}", error);
+                    error!("accept error: {}", error);
                 }
             }
         });
@@ -115,8 +89,8 @@ fn main() {
 
             match conn.await {
                 Ok(conn) => {
-                    let h = http(&http_listener, conn.clone());
-                    let s = socks5(&socks5_listener, conn);
+                    let h = proxy(HttpProxy, &http_listener, conn.clone());
+                    let s = proxy(Socks5Proxy, &socks5_listener, conn);
 
                     futures::try_join!(h, s)
                         .inspect_err(|error| {
