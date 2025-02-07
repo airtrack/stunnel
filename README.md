@@ -1,5 +1,4 @@
-STunnel
-=======
+# STunnel
 
 Simple SOCKS5/HTTP tunnel. SOCKS5 on client side provides NO AUTHENTICATION TCP/UDP proxy. Version 2.0 based on QUIC.
 
@@ -17,15 +16,13 @@ Simple SOCKS5/HTTP tunnel. SOCKS5 on client side provides NO AUTHENTICATION TCP/
 	            .                      l                     .
 	            .                      |                     .
 
-Version 2.0 status
-------------------
+## Version 2.0 status
 
 - [x] HTTP proxy
 - [x] SOCKS5 TCP proxy
-- [ ] SOCKS5 UDP proxy
+- [x] SOCKS5 UDP proxy
 
-Usage
------
+## Usage
 
 1. `./certgen` generates cert and private key
 2. modify `config/client.toml` and `config/server.toml`
@@ -33,8 +30,7 @@ Usage
 
 Browser connect client address(`127.0.0.1:1080`) through SOCKS5 or connect client address(`127.0.0.1:8080`) through HTTP.
 
-Work with autoproxy and gatewaysocks
-------------------------------------
+## Work with autoproxy and gatewaysocks
 
 * [autoproxy](https://github.com/airtrack/autoproxy)
 * [gatewaysocks](https://github.com/airtrack/gatewaysocks)
