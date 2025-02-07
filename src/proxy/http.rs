@@ -10,7 +10,7 @@ use tokio::{
     net::TcpStream,
 };
 
-use super::{DatagramRw, Proxy, ProxyType, TcpProxyConn, UdpProxyBind};
+use super::{AsyncReadDatagram, AsyncWriteDatagram, Proxy, ProxyType, TcpProxyConn, UdpProxyBind};
 
 #[derive(Clone, Copy)]
 pub struct HttpProxy;
@@ -208,7 +208,11 @@ impl UdpProxyBind for HttpNoUdp {
         panic!("not supported")
     }
 
-    async fn copy_bidirectional(self, _other: impl DatagramRw + Send) -> std::io::Result<()> {
+    async fn copy_bidirectional(
+        self,
+        _reader: impl AsyncReadDatagram + Send,
+        _writer: impl AsyncWriteDatagram + Send,
+    ) -> std::io::Result<()> {
         panic!("not supported")
     }
 }

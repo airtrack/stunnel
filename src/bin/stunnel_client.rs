@@ -5,7 +5,7 @@ use quinn::Connection;
 use stunnel::proxy::{http::HttpProxy, socks5::Socks5Proxy};
 use stunnel::proxy::{Proxy, ProxyType, TcpProxyConn, UdpProxyBind};
 use stunnel::quic::client;
-use stunnel::tunnel::start_tcp_tunnel;
+use stunnel::tunnel::{start_tcp_tunnel, start_udp_tunnel};
 use tokio::{net::TcpListener, runtime::Runtime};
 
 async fn proxy<T: TcpProxyConn + Send, U: UdpProxyBind + Send>(
@@ -25,17 +25,22 @@ async fn proxy<T: TcpProxyConn + Send, U: UdpProxyBind + Send>(
 
         tokio::spawn(async move {
             match proxy.accept(stream).await {
-                Ok(ProxyType::Tcp(mut stream)) => {
-                    let target = stream.target_host().to_string();
-                    start_tcp_tunnel(conn, &target, &mut stream)
+                Ok(ProxyType::Tcp(mut tcp)) => {
+                    let target = tcp.target_host().to_string();
+                    start_tcp_tunnel(conn, &target, &mut tcp)
                         .await
                         .inspect_err(|error| {
                             error!("tcp to {}, error: {}", target, error);
                         })
                         .ok();
                 }
-                Ok(ProxyType::Udp(_)) => {
-                    error!("udp not implemented!");
+                Ok(ProxyType::Udp(udp)) => {
+                    start_udp_tunnel(conn, udp)
+                        .await
+                        .inspect_err(|error| {
+                            error!("udp bind error: {}", error);
+                        })
+                        .ok();
                 }
                 Err(error) => {
                     error!("accept error: {}", error);

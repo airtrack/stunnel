@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::net::SocketAddr;
 
 use async_trait::async_trait;
 use tokio::{
@@ -38,24 +38,21 @@ pub trait TcpProxyConn {
 pub trait UdpProxyBind {
     async fn response_bind_ok(&mut self) -> std::io::Result<()>;
     async fn response_bind_err(&mut self) -> std::io::Result<()>;
-    async fn copy_bidirectional(self, other: impl DatagramRw + Send) -> std::io::Result<()>;
+    async fn copy_bidirectional(
+        self,
+        reader: impl AsyncReadDatagram + Send,
+        writer: impl AsyncWriteDatagram + Send,
+    ) -> std::io::Result<()>;
 }
 
 #[async_trait]
-pub trait DatagramRw: Clone {
-    async fn send(&self, buf: &[u8], target: SocketAddr) -> std::io::Result<usize>;
-    async fn recv(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)>;
+pub trait AsyncReadDatagram {
+    async fn recv(&mut self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)>;
 }
 
 #[async_trait]
-impl DatagramRw for Arc<UdpSocket> {
-    async fn send(&self, buf: &[u8], target: SocketAddr) -> std::io::Result<usize> {
-        self.send_to(buf, target).await
-    }
-
-    async fn recv(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
-        self.recv_from(buf).await
-    }
+pub trait AsyncWriteDatagram {
+    async fn send(&mut self, buf: &[u8], addr: SocketAddr) -> std::io::Result<usize>;
 }
 
 pub async fn copy_bidirectional<R: AsyncRead + Unpin + ?Sized, W: AsyncWrite + Unpin + ?Sized>(
@@ -78,4 +75,28 @@ pub async fn copy_bidirectional<R: AsyncRead + Unpin + ?Sized, W: AsyncWrite + U
     };
 
     futures::try_join!(r, w)
+}
+
+pub async fn copy_bidirectional_udp_socket<R: AsyncReadDatagram, W: AsyncWriteDatagram>(
+    socket: &UdpSocket,
+    reader: &mut R,
+    writer: &mut W,
+) -> std::io::Result<(u64, u64)> {
+    async fn r<W: AsyncWriteDatagram>(socket: &UdpSocket, writer: &mut W) -> std::io::Result<()> {
+        let mut buf = [0u8; 1500];
+        loop {
+            let (n, from) = socket.recv_from(&mut buf).await?;
+            writer.send(&buf[..n], from).await?;
+        }
+    }
+
+    async fn w<R: AsyncReadDatagram>(socket: &UdpSocket, reader: &mut R) -> std::io::Result<()> {
+        let mut buf = [0u8; 1500];
+        loop {
+            let (n, target) = reader.recv(&mut buf).await?;
+            socket.send_to(&buf[..n], target).await?;
+        }
+    }
+
+    futures::try_join!(r(socket, writer), w(socket, reader)).map(|_| (0, 0))
 }

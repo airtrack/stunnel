@@ -2,17 +2,17 @@ use std::{env, fs};
 
 use log::{error, info};
 use quinn::Connection;
-use stunnel::{quic::server, tunnel::handle_tcp_tunnel};
+use stunnel::{quic::server, tunnel::handle_tunnel};
 use tokio::runtime::Runtime;
 
 async fn handle_conn(conn: Connection) -> std::io::Result<()> {
     loop {
         let (mut send, mut recv) = conn.accept_bi().await?;
         tokio::spawn(async move {
-            handle_tcp_tunnel(&mut send, &mut recv)
+            handle_tunnel(&mut send, &mut recv)
                 .await
                 .inspect_err(|error| {
-                    error!("handle stream error: {}", error);
+                    error!("handle tunnel error: {}", error);
                 })
                 .ok();
         });

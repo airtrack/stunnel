@@ -11,7 +11,7 @@ use tokio::{
     sync::oneshot::{self, Receiver, Sender},
 };
 
-use super::{DatagramRw, Proxy, ProxyType, TcpProxyConn, UdpProxyBind};
+use super::{AsyncReadDatagram, AsyncWriteDatagram, Proxy, ProxyType, TcpProxyConn, UdpProxyBind};
 
 const SOCKS5_VER: u8 = 5;
 const METHOD_NO_AUTH: u8 = 0;
@@ -320,17 +320,19 @@ impl Socks5UdpSocket {
         self.holder.as_mut().unwrap().shutdown().await
     }
 
-    pub async fn copy_bidirectional(self, other: impl DatagramRw) -> std::io::Result<()> {
-        let outbound1 = other;
-        let outbound2 = outbound1.clone();
+    pub async fn copy_bidirectional(
+        self,
+        reader: impl AsyncReadDatagram,
+        writer: impl AsyncWriteDatagram,
+    ) -> std::io::Result<()> {
         let (tx, rx) = oneshot::channel();
         let (this, holder) = self.split();
 
-        let to = this.copy_to(outbound1, tx);
-        let from = this.copy_from(outbound2, rx);
-        let holder = Self::copy_holder(holder);
+        let r = this.copy_read(reader, rx);
+        let w = this.copy_write(writer, tx);
+        let h = Self::copy_holder(holder);
 
-        futures::try_join!(to, from, holder)?;
+        futures::try_join!(r, w, h)?;
         Ok(())
     }
 
@@ -364,14 +366,14 @@ impl Socks5UdpSocket {
         }
     }
 
-    async fn copy_to(
+    async fn copy_write(
         &self,
-        outbound1: impl DatagramRw,
+        mut writer: impl AsyncWriteDatagram,
         tx: Sender<SocketAddr>,
     ) -> std::io::Result<()> {
         let mut buf = [0u8; 1500];
         let (range, from1, to) = self.recv(&mut buf).await?;
-        outbound1.send(&buf[range], to).await.ok();
+        writer.send(&buf[range], to).await?;
 
         tx.send(from1)
             .map_err(|_| Error::new(ErrorKind::Other, "Send addr error"))?;
@@ -379,14 +381,14 @@ impl Socks5UdpSocket {
         loop {
             let (range, from2, to) = self.recv(&mut buf).await?;
             if from1 == from2 {
-                outbound1.send(&buf[range], to).await.ok();
+                writer.send(&buf[range], to).await?;
             }
         }
     }
 
-    async fn copy_from(
+    async fn copy_read(
         &self,
-        outbound2: impl DatagramRw,
+        mut reader: impl AsyncReadDatagram,
         rx: Receiver<SocketAddr>,
     ) -> std::io::Result<()> {
         let to = rx
@@ -396,7 +398,7 @@ impl Socks5UdpSocket {
         const START: usize = SOCKS5_IPV4_ADDR_LEN;
         let mut buf = [0u8; 1500];
         loop {
-            let (size, from) = outbound2.recv(&mut buf[START..]).await?;
+            let (size, from) = reader.recv(&mut buf[START..]).await?;
             self.send(&mut buf, START..START + size, from, to).await?;
         }
     }
@@ -425,7 +427,11 @@ impl UdpProxyBind for Socks5UdpSocket {
         self.associate_err().await
     }
 
-    async fn copy_bidirectional(self, other: impl DatagramRw + Send) -> std::io::Result<()> {
-        self.copy_bidirectional(other).await
+    async fn copy_bidirectional(
+        self,
+        reader: impl AsyncReadDatagram + Send,
+        writer: impl AsyncWriteDatagram + Send,
+    ) -> std::io::Result<()> {
+        self.copy_bidirectional(reader, writer).await
     }
 }
