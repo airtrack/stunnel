@@ -6,9 +6,12 @@ use tokio::{
     net::{TcpStream, UdpSocket},
 };
 
-use crate::proxy::{
-    copy_bidirectional, copy_bidirectional_udp_socket, AsyncReadDatagram, AsyncWriteDatagram,
-    TcpProxyConn, UdpProxyBind,
+use crate::{
+    proxy::{
+        copy_bidirectional, copy_bidirectional_udp_socket, AsyncReadDatagram, AsyncWriteDatagram,
+        TcpProxyConn, UdpProxyBind,
+    },
+    tlstcp::{self, TlsReadStream, TlsWriteStream},
 };
 
 pub struct Tunnel<S, R> {
@@ -38,47 +41,90 @@ impl IntoTunnel<quinn::SendStream, quinn::RecvStream> for quinn::Connection {
 #[async_trait]
 impl AsyncReadDatagram for quinn::RecvStream {
     async fn recv(&mut self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
-        let n = self.read_u8().await? as usize;
-        let mut addr = vec![0u8; n];
-        self.read_exact(&mut addr)
-            .await
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
-
-        if let Some(addr) = std::str::from_utf8(&addr)
-            .ok()
-            .and_then(|addr| addr.parse::<SocketAddr>().ok())
-        {
-            let size = self.read_u16().await? as usize;
-            if size > buf.len() {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "recv buffer overflow",
-                ))
-            } else {
-                self.read_exact(&mut buf[..size])
-                    .await
-                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
-                Ok((size, addr))
-            }
-        } else {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "invalid addr",
-            ))
-        }
+        recv_datagram(self, buf).await
     }
 }
 
 #[async_trait]
 impl AsyncWriteDatagram for quinn::SendStream {
     async fn send(&mut self, buf: &[u8], addr: SocketAddr) -> std::io::Result<usize> {
-        let addr = addr.to_string();
-        self.write_u8(addr.len() as u8).await?;
-        self.write_all(addr.as_bytes()).await?;
-        self.write_u16(buf.len() as u16).await?;
-        self.write_all(buf).await?;
-        Ok(buf.len())
+        send_datagram(self, buf, addr).await
     }
+}
+
+#[async_trait]
+impl IntoTunnel<TlsWriteStream, TlsReadStream> for tlstcp::Connector {
+    async fn into_tunnel(self) -> std::io::Result<Tunnel<TlsWriteStream, TlsReadStream>> {
+        let stream = self.connect().await?;
+        let (read_half, write_half) = tlstcp::split(stream);
+        Ok(Tunnel {
+            s: write_half,
+            r: read_half,
+        })
+    }
+}
+
+#[async_trait]
+impl AsyncReadDatagram for tlstcp::TlsReadStream {
+    async fn recv(&mut self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+        recv_datagram(self, buf).await
+    }
+}
+
+#[async_trait]
+impl AsyncWriteDatagram for tlstcp::TlsWriteStream {
+    async fn send(&mut self, buf: &[u8], addr: SocketAddr) -> std::io::Result<usize> {
+        send_datagram(self, buf, addr).await
+    }
+}
+
+async fn recv_datagram<T: AsyncRead + Unpin>(
+    reader: &mut T,
+    buf: &mut [u8],
+) -> std::io::Result<(usize, SocketAddr)> {
+    let n = reader.read_u8().await? as usize;
+    let mut addr = vec![0u8; n];
+    reader
+        .read_exact(&mut addr)
+        .await
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+
+    if let Some(addr) = std::str::from_utf8(&addr)
+        .ok()
+        .and_then(|addr| addr.parse::<SocketAddr>().ok())
+    {
+        let size = reader.read_u16().await? as usize;
+        if size > buf.len() {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "recv buffer overflow",
+            ))
+        } else {
+            reader
+                .read_exact(&mut buf[..size])
+                .await
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+            Ok((size, addr))
+        }
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "invalid addr",
+        ))
+    }
+}
+
+async fn send_datagram<T: AsyncWrite + Unpin>(
+    writer: &mut T,
+    buf: &[u8],
+    addr: SocketAddr,
+) -> std::io::Result<usize> {
+    let addr = addr.to_string();
+    writer.write_u8(addr.len() as u8).await?;
+    writer.write_all(addr.as_bytes()).await?;
+    writer.write_u16(buf.len() as u16).await?;
+    writer.write_all(buf).await?;
+    Ok(buf.len())
 }
 
 pub async fn start_tcp_tunnel<
