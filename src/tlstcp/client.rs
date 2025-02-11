@@ -44,7 +44,10 @@ pub fn new(config: &Config) -> std::io::Result<Connector> {
         .add(cert)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
 
-    let client_config = rustls::ClientConfig::builder()
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let client_config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
         .with_root_certificates(certs)
         .with_no_client_auth();
 

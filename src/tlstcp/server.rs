@@ -51,7 +51,10 @@ pub async fn new(config: &Config) -> std::io::Result<Acceptor> {
         _ => return std::io::Error::new(std::io::ErrorKind::Other, error),
     })?;
 
-    let server_config = rustls::ServerConfig::builder()
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let server_config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
         .with_no_client_auth()
         .with_single_cert(vec![cert], priv_key)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
