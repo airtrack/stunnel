@@ -3,5 +3,6 @@ http_listen = "0.0.0.0:8080"
 server_addr = "127.0.0.1:12345"
 server_name = "stunnel"
 server_cert = "stunnel_cert.pem"
+private_key = "private_key.pem"
 # tlstcp or quic
-tunnel_type = "quic"
+tunnel_type = "tlstcp"

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use rustls::pki_types::{
-    pem::{self, PemObject},
-    CertificateDer, PrivateKeyDer,
+use rustls::{
+    pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer},
+    server::WebPkiClientVerifier,
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
@@ -40,26 +40,27 @@ impl Accepting {
     }
 }
 
-pub async fn new(config: &Config) -> std::io::Result<Acceptor> {
-    let cert = CertificateDer::from_pem_file(&config.cert).map_err(|error| match error {
-        pem::Error::Io(e) => return e,
-        _ => return std::io::Error::new(std::io::ErrorKind::Other, error),
-    })?;
+pub async fn new(config: &Config) -> Acceptor {
+    let cert = CertificateDer::from_pem_file(&config.cert).unwrap();
+    let priv_key = PrivateKeyDer::from_pem_file(&config.priv_key).unwrap();
 
-    let priv_key = PrivateKeyDer::from_pem_file(&config.priv_key).map_err(|error| match error {
-        pem::Error::Io(e) => return e,
-        _ => return std::io::Error::new(std::io::ErrorKind::Other, error),
-    })?;
+    let mut certs = rustls::RootCertStore::empty();
+    certs.add(cert.clone()).unwrap();
 
     let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let client_verifier =
+        WebPkiClientVerifier::builder_with_provider(Arc::new(certs), provider.clone())
+            .build()
+            .unwrap();
+
     let server_config = rustls::ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .unwrap()
-        .with_no_client_auth()
+        .with_client_cert_verifier(client_verifier)
         .with_single_cert(vec![cert], priv_key)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+        .unwrap();
 
-    let listener = TcpListener::bind(&config.addr).await?;
+    let listener = TcpListener::bind(&config.addr).await.unwrap();
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
-    Ok(Acceptor { listener, acceptor })
+    Acceptor { listener, acceptor }
 }

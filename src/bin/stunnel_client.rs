@@ -42,9 +42,10 @@ async fn tlstcp_client(
         server_addr: config.server_addr,
         server_name: config.server_name,
         cert: config.server_cert,
+        priv_key: config.private_key,
     };
 
-    let connector = tlstcp::client::new(&tlstcp_config).unwrap();
+    let connector = tlstcp::client::new(&tlstcp_config);
     let h = proxy_tunnel(HttpProxy, &connector, &http_listener);
     let s = proxy_tunnel(Socks5Proxy, &connector, &socks5_listener);
 
@@ -134,6 +135,7 @@ struct Config {
     server_addr: String,
     server_name: String,
     server_cert: String,
+    private_key: String,
     tunnel_type: String,
 }
 

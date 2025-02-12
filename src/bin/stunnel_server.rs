@@ -18,7 +18,7 @@ async fn tlstcp_server(config: Config) -> std::io::Result<()> {
         cert: config.cert,
         priv_key: config.priv_key,
     };
-    let acceptor = tlstcp::server::new(&tlstcp_config).await.unwrap();
+    let acceptor = tlstcp::server::new(&tlstcp_config).await;
 
     loop {
         let accepting = acceptor.accept().await?;
