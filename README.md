@@ -18,9 +18,16 @@ Simple SOCKS5/HTTP tunnel. SOCKS5 on client side provides NO AUTHENTICATION TCP/
 
 ## Version 2.0 status
 
+### Proxy type
+
 - [x] HTTP proxy
 - [x] SOCKS5 TCP proxy
 - [x] SOCKS5 UDP proxy
+
+### Tunnel type
+
+- [x] QUIC
+- [x] TLS-TCP(based on TLS on TCP)
 
 ## Usage
 
