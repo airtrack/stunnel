@@ -61,6 +61,7 @@ async fn quic_client(
     let client_config = quic::client::Config {
         addr: "0.0.0.0:0".to_string(),
         cert: config.server_cert,
+        priv_key: config.private_key,
     };
 
     loop {

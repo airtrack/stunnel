@@ -1,42 +1,44 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
-use quinn::{congestion, ClientConfig, Endpoint, TransportConfig};
-use rustls::pki_types::{
-    pem::{self, PemObject},
-    CertificateDer,
+use quinn::{
+    congestion, crypto::rustls::QuicClientConfig, ClientConfig, Endpoint, TransportConfig,
 };
+use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 
 pub struct Config {
     pub addr: String,
     pub cert: String,
+    pub priv_key: String,
 }
 
 pub fn new(config: &Config) -> std::io::Result<Endpoint> {
-    let cert = CertificateDer::from_pem_file(&config.cert).map_err(|error| match error {
-        pem::Error::Io(e) => return e,
-        _ => return std::io::Error::new(std::io::ErrorKind::Other, error),
-    })?;
+    let cert = CertificateDer::from_pem_file(&config.cert).unwrap();
+    let priv_key = PrivateKeyDer::from_pem_file(&config.priv_key).unwrap();
 
     let mut certs = rustls::RootCertStore::empty();
-    certs
-        .add(cert)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+    certs.add(cert.clone()).unwrap();
 
-    let mut client_config = ClientConfig::with_root_certificates(Arc::new(certs))
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut client_config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
+        .with_root_certificates(certs)
+        .with_client_auth_cert(vec![cert], priv_key)
+        .unwrap();
+    client_config.enable_early_data = true;
+
+    let client_config = QuicClientConfig::try_from(client_config).unwrap();
+    let mut client_config = ClientConfig::new(Arc::new(client_config));
+
     let mut transport = TransportConfig::default();
-
     transport
         .max_concurrent_bidi_streams(10000u32.into())
         .keep_alive_interval(Some(Duration::from_secs(3)))
         .congestion_controller_factory(Arc::new(congestion::BbrConfig::default()));
+
     client_config.transport_config(Arc::new(transport));
 
-    let addr = config
-        .addr
-        .parse::<SocketAddr>()
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
-
+    let addr = config.addr.parse().unwrap();
     let mut endpoint = Endpoint::client(addr)?;
     endpoint.set_default_client_config(client_config);
     Ok(endpoint)
