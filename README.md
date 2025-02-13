@@ -1,6 +1,6 @@
 # STunnel
 
-Simple SOCKS5/HTTP tunnel. SOCKS5 on client side provides NO AUTHENTICATION TCP/UDP proxy. Version 2.0 based on QUIC.
+Simple SOCKS5/HTTP tunnel. SOCKS5 on client side provides NO AUTHENTICATION TCP/UDP proxy. Version 2.0 based on QUIC and TLS-TCP.
 
 	            .                      |                     .
 	            .                      f                     .
@@ -35,7 +35,7 @@ Simple SOCKS5/HTTP tunnel. SOCKS5 on client side provides NO AUTHENTICATION TCP/
 2. modify `config/client.toml` and `config/server.toml`
 3. start server(`./stunnel_server config/server.toml`) and client(`./stunnel_client config/client.toml`) with the same cert
 
-Browser connect client address(`127.0.0.1:1080`) through SOCKS5 or connect client address(`127.0.0.1:8080`) through HTTP.
+Browser connect client address(`127.0.0.1:1080`) via SOCKS5 or connect client address(`127.0.0.1:8080`) via HTTP.
 
 ## Work with autoproxy and gatewaysocks
 
