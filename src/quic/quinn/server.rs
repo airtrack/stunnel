@@ -6,11 +6,7 @@ use rustls::{
     server::WebPkiClientVerifier,
 };
 
-pub struct Config {
-    pub addr: String,
-    pub cert: String,
-    pub priv_key: String,
-}
+use crate::quic::Config;
 
 pub fn new(config: &Config) -> std::io::Result<Endpoint> {
     let cert = CertificateDer::from_pem_file(&config.cert).unwrap();
@@ -32,6 +28,7 @@ pub fn new(config: &Config) -> std::io::Result<Endpoint> {
         .with_single_cert(vec![cert], priv_key)
         .unwrap();
     server_config.max_early_data_size = u32::MAX;
+    server_config.alpn_protocols = vec![b"stunnel".to_vec()];
 
     let server_config = QuicServerConfig::try_from(server_config).unwrap();
     let mut server_config = ServerConfig::with_crypto(Arc::new(server_config));

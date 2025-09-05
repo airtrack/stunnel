@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::{env, fs};
 
 use log::{error, info};
@@ -11,17 +12,17 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::{net::TcpListener, runtime::Runtime};
 
 trait State {
-    fn in_good_condition(&self) -> std::io::Result<()>;
+    fn in_good_condition(&mut self) -> std::io::Result<()>;
 }
 
 impl State for tlstcp::Connector {
-    fn in_good_condition(&self) -> std::io::Result<()> {
+    fn in_good_condition(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }
 
 impl State for quinn::Connection {
-    fn in_good_condition(&self) -> std::io::Result<()> {
+    fn in_good_condition(&mut self) -> std::io::Result<()> {
         if let Some(error) = self.close_reason() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::ConnectionReset,
@@ -30,6 +31,13 @@ impl State for quinn::Connection {
         }
 
         Ok(())
+    }
+}
+
+impl State for s2n_quic::connection::Handle {
+    fn in_good_condition(&mut self) -> std::io::Result<()> {
+        self.keep_alive(true)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::ConnectionReset, error))
     }
 }
 
@@ -52,20 +60,21 @@ async fn tlstcp_client(
     futures::try_join!(h, s).map(|_| ())
 }
 
-async fn quic_client(
+async fn quinn_client(
     config: Config,
     http_listener: TcpListener,
     socks5_listener: TcpListener,
 ) -> std::io::Result<()> {
     let addr = config.server_addr.parse().unwrap();
-    let client_config = quic::client::Config {
+    let client_config = quic::Config {
         addr: "0.0.0.0:0".to_string(),
         cert: config.server_cert,
         priv_key: config.private_key,
+        loss_threshold: config.quic_loss_threshold,
     };
 
     loop {
-        let endpoint = quic::client::new(&client_config).unwrap();
+        let endpoint = quic::quinn::client::new(&client_config).unwrap();
         let conn = endpoint.connect(addr, &config.server_name).unwrap();
 
         match conn.await {
@@ -86,6 +95,46 @@ async fn quic_client(
     }
 }
 
+async fn s2n_client(
+    config: Config,
+    http_listener: TcpListener,
+    socks5_listener: TcpListener,
+) -> std::io::Result<()> {
+    let addr: SocketAddr = config.server_addr.parse().unwrap();
+    let client_config = quic::Config {
+        addr: "0.0.0.0:0".to_string(),
+        cert: config.server_cert,
+        priv_key: config.private_key,
+        loss_threshold: config.quic_loss_threshold,
+    };
+
+    loop {
+        let endpoint = quic::s2n_quic::client::new(&client_config).unwrap();
+        let connect =
+            s2n_quic::client::Connect::new(addr).with_server_name(config.server_name.clone());
+        let conn = endpoint.connect(connect);
+
+        match conn.await {
+            Ok(mut conn) => {
+                if conn.keep_alive(true).is_ok() {
+                    let conn = conn.handle();
+                    let h = proxy_tunnel(HttpProxy, &conn, &http_listener);
+                    let s = proxy_tunnel(Socks5Proxy, &conn, &socks5_listener);
+
+                    futures::try_join!(h, s)
+                        .inspect_err(|error| {
+                            error!("tunnel error: {}", error);
+                        })
+                        .ok();
+                }
+            }
+            Err(error) => {
+                error!("connect {} error: {}", addr, error);
+            }
+        }
+    }
+}
+
 async fn proxy_tunnel<
     T: TcpProxyConn + Send,
     U: UdpProxyBind + Send,
@@ -96,6 +145,7 @@ async fn proxy_tunnel<
     into: &(impl IntoTunnel<S, R> + State + Clone + Send + 'static),
     listener: &TcpListener,
 ) -> std::io::Result<()> {
+    let mut into = into.clone();
     while let Ok((stream, _)) = listener.accept().await {
         into.in_good_condition()?;
         let into = into.clone();
@@ -138,6 +188,13 @@ struct Config {
     server_cert: String,
     private_key: String,
     tunnel_type: String,
+
+    #[serde(default = "default_quic_loss_threshold")]
+    quic_loss_threshold: u32,
+}
+
+fn default_quic_loss_threshold() -> u32 {
+    20
 }
 
 fn main() {
@@ -169,7 +226,12 @@ fn main() {
                     .ok();
             }
             "quic" => {
-                quic_client(config, http_listener, socks5_listener)
+                quinn_client(config, http_listener, socks5_listener)
+                    .await
+                    .ok();
+            }
+            "s2n-quic" => {
+                s2n_client(config, http_listener, socks5_listener)
                     .await
                     .ok();
             }

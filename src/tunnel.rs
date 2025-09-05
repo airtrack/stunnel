@@ -53,6 +53,34 @@ impl AsyncWriteDatagram for quinn::SendStream {
 }
 
 #[async_trait]
+impl IntoTunnel<s2n_quic::stream::SendStream, s2n_quic::stream::ReceiveStream>
+    for s2n_quic::connection::Handle
+{
+    async fn into_tunnel(
+        mut self,
+    ) -> std::io::Result<Tunnel<s2n_quic::stream::SendStream, s2n_quic::stream::ReceiveStream>>
+    {
+        let stream = self.open_bidirectional_stream().await?;
+        let (recv, send) = stream.split();
+        Ok(Tunnel { s: send, r: recv })
+    }
+}
+
+#[async_trait]
+impl AsyncReadDatagram for s2n_quic::stream::ReceiveStream {
+    async fn recv(&mut self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+        recv_datagram(self, buf).await
+    }
+}
+
+#[async_trait]
+impl AsyncWriteDatagram for s2n_quic::stream::SendStream {
+    async fn send(&mut self, buf: &[u8], addr: SocketAddr) -> std::io::Result<usize> {
+        send_datagram(self, buf, addr).await
+    }
+}
+
+#[async_trait]
 impl IntoTunnel<TlsWriteStream, TlsReadStream> for tlstcp::Connector {
     async fn into_tunnel(self) -> std::io::Result<Tunnel<TlsWriteStream, TlsReadStream>> {
         let stream = self.connect().await?;

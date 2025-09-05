@@ -5,11 +5,7 @@ use quinn::{
 };
 use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 
-pub struct Config {
-    pub addr: String,
-    pub cert: String,
-    pub priv_key: String,
-}
+use crate::quic::Config;
 
 pub fn new(config: &Config) -> std::io::Result<Endpoint> {
     let cert = CertificateDer::from_pem_file(&config.cert).unwrap();
@@ -26,6 +22,7 @@ pub fn new(config: &Config) -> std::io::Result<Endpoint> {
         .with_client_auth_cert(vec![cert], priv_key)
         .unwrap();
     client_config.enable_early_data = true;
+    client_config.alpn_protocols = vec![b"stunnel".to_vec()];
 
     let client_config = QuicClientConfig::try_from(client_config).unwrap();
     let mut client_config = ClientConfig::new(Arc::new(client_config));

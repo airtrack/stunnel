@@ -1,3 +1,7 @@
 listen = "0.0.0.0:12345"
 priv_key = "private_key.pem"
 cert = "stunnel_cert.pem"
+
+# quic or s2n-quic
+# quic_server = "s2n-quic"
+# quic_loss_threshold = 2

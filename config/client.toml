@@ -4,5 +4,7 @@ server_addr = "127.0.0.1:12345"
 server_name = "stunnel"
 server_cert = "stunnel_cert.pem"
 private_key = "private_key.pem"
-# tlstcp or quic
+
+# tlstcp or quic or s2n-quic
 tunnel_type = "tlstcp"
+# quic_loss_threshold = 2
