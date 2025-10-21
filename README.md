@@ -2,19 +2,21 @@
 
 Simple SOCKS5/HTTP tunnel. SOCKS5 on client side provides NO AUTHENTICATION TCP/UDP proxy. Version 2.0 based on QUIC and TLS-TCP.
 
-	            .                      |                     .
-	            .                      f                     .
-	            .                      i                     .
-	  HTTP -----|                      r                     |------ outbound1
-	            |                      e                     |
-	            |                      |                     |
-	         client---------------- tunnel ----------------server--- outbound2
-	            |                      |                     |
-	            |                      w                     |
-	SOCKS5 -----|                      a                     |------ outbound3
-	            .                      l                     .
-	            .                      l                     .
-	            .                      |                     .
+```
+                .                      |                     .
+                .                      f                     .
+                .                      i                     .
+      HTTP -----|                      r                     |------ outbound1
+                |                      e                     |
+                |                      |                     |
+             client---------------- tunnel ----------------server--- outbound2
+                |                      |                     |
+                |                      w                     |
+    SOCKS5 -----|                      a                     |------ outbound3
+                .                      l                     .
+                .                      l                     .
+                .                      |                     .
+```
 
 ## Version 2.0 status
 
@@ -51,7 +53,7 @@ Browser connect client address(`127.0.0.1:1080`) via SOCKS5 or connect client ad
            ^                               ^          |
            |                               |          |                   -------------
            |                               |          |                   |           |
-           |                               |          |--- TCP/UDP -----> |   direct  |
+           |                               |          |--- TCP/UDP -----> |  direct   |
            |                               |                              |           |
            |                               |                              -------------
     -----------------             ------------------
