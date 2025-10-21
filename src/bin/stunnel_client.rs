@@ -2,11 +2,11 @@ use std::net::SocketAddr;
 use std::{env, fs};
 
 use log::{error, info};
-use stunnel::proxy::{http::HttpProxy, socks5::Socks5Proxy};
 use stunnel::proxy::{
     AsyncReadDatagram, AsyncWriteDatagram, Proxy, ProxyType, TcpProxyConn, UdpProxyBind,
 };
-use stunnel::tunnel::{start_tcp_tunnel, start_udp_tunnel, IntoTunnel};
+use stunnel::proxy::{http::HttpProxy, socks5::Socks5Proxy};
+use stunnel::tunnel::{IntoTunnel, start_tcp_tunnel, start_udp_tunnel};
 use stunnel::{quic, tlstcp};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::{net::TcpListener, runtime::Runtime};

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, ServerName};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 

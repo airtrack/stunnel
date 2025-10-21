@@ -1,8 +1,8 @@
 use std::{error::Error, path::Path, time::Duration};
 
 use s2n_quic::{
-    provider::{congestion_controller::bbr, limits::Limits, tls},
     Server,
+    provider::{congestion_controller::bbr, limits::Limits, tls},
 };
 
 use crate::quic::Config;

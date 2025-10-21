@@ -1,9 +1,9 @@
 use std::{sync::Arc, time::Duration};
 
 use quinn::{
-    congestion, crypto::rustls::QuicClientConfig, ClientConfig, Endpoint, TransportConfig,
+    ClientConfig, Endpoint, TransportConfig, congestion, crypto::rustls::QuicClientConfig,
 };
-use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 
 use crate::quic::Config;
 

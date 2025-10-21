@@ -1,6 +1,6 @@
 use std::{fs::File, io::Write};
 
-use rcgen::{generate_simple_self_signed, CertifiedKey};
+use rcgen::{CertifiedKey, generate_simple_self_signed};
 
 fn main() {
     let subject_alt_names = vec!["stunnel".to_string()];

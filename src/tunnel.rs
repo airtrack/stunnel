@@ -8,8 +8,8 @@ use tokio::{
 
 use crate::{
     proxy::{
-        copy_bidirectional, copy_bidirectional_udp_socket, AsyncReadDatagram, AsyncWriteDatagram,
-        TcpProxyConn, UdpProxyBind,
+        AsyncReadDatagram, AsyncWriteDatagram, TcpProxyConn, UdpProxyBind, copy_bidirectional,
+        copy_bidirectional_udp_socket,
     },
     tlstcp::{self, TlsReadStream, TlsWriteStream},
 };

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use rustls::{
-    pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer},
+    pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
     server::WebPkiClientVerifier,
 };
 use tokio::net::{TcpListener, TcpStream};
