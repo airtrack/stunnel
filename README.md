@@ -43,14 +43,19 @@ Browser connect client address(`127.0.0.1:1080`) via SOCKS5 or connect client ad
 * [gatewaysocks](https://github.com/airtrack/gatewaysocks)
 
 ```
-    ----------------                 -------------                     -----------
-    | gatewaysocks | === TCP/UDP ==> | autoproxy | ===== TCP/UDP ====> | stunnel |
-    ----------------                 -------------   |                 -----------
-           ^                               ^         |                 -----------
-           |                               |         |== TCP/UDP ====> | direct  |
-           |                               |                           -----------
+    ----------------                 -------------                        -------------
+    |              |                 |           |                        |           |
+    | gatewaysocks | --- TCP/UDP --> | autoproxy | ------- TCP/UDP -----> |  stunnel  |
+    |              |                 |           |    |                   |           |
+    ----------------                 -------------    |                   -------------
+           ^                               ^          |
+           |                               |          |                   -------------
+           |                               |          |                   |           |
+           |                               |          |--- TCP/UDP -----> |   direct  |
+           |                               |                              |           |
+           |                               |                              -------------
     -----------------             ------------------
-    | other devices |             |   set system   |
+    |    devices    |             |   set system   |
     |  in the same  |             | proxy settings |
     |    router     |             |  to autoproxy  |
     -----------------             ------------------
