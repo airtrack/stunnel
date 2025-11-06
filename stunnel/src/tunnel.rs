@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, pin::pin};
 
 use async_trait::async_trait;
 use tokio::{
@@ -20,8 +20,54 @@ pub struct Tunnel<S, R> {
 }
 
 impl<S, R> Tunnel<S, R> {
-    fn into_split(self) -> (S, R) {
+    fn split(self) -> (S, R) {
         (self.s, self.r)
+    }
+}
+
+impl<S: Unpin, R: AsyncRead + Unpin> AsyncRead for Tunnel<S, R> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        pin!(&mut self.get_mut().r).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin, R: Unpin> AsyncWrite for Tunnel<S, R> {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+        pin!(&mut self.get_mut().s).poll_write(cx, buf)
+    }
+
+    fn poll_write_vectored(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+        pin!(&mut self.get_mut().s).poll_write_vectored(cx, bufs)
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        pin!(&mut self.get_mut().s).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        pin!(&mut self.get_mut().s).poll_shutdown(cx)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.s.is_write_vectored()
     }
 }
 
@@ -165,8 +211,9 @@ pub async fn start_tcp_tunnel<
     tcp: &mut T,
 ) -> std::io::Result<(u64, u64)> {
     match connect_tcp_tunnel(into, target).await {
-        Ok((bind, mut writer, mut reader)) => {
+        Ok((bind, conn)) => {
             tcp.response_connect_ok(bind).await?;
+            let (mut writer, mut reader) = conn.split();
             tcp.copy_bidirectional(&mut reader, &mut writer).await
         }
         Err(e) => {
@@ -179,17 +226,15 @@ pub async fn start_tcp_tunnel<
 async fn connect_tcp_tunnel<S: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin>(
     into: impl IntoTunnel<S, R>,
     target: &str,
-) -> std::io::Result<(SocketAddr, S, R)> {
-    let conn = into.into_tunnel().await?;
-    let (mut writer, mut reader) = conn.into_split();
+) -> std::io::Result<(SocketAddr, Tunnel<S, R>)> {
+    let mut conn = into.into_tunnel().await?;
 
-    writer.write_u8(target.len() as u8).await?;
-    writer.write_all(target.as_bytes()).await?;
+    conn.write_u8(target.len() as u8).await?;
+    conn.write_all(target.as_bytes()).await?;
 
-    let n = reader.read_u8().await? as usize;
+    let n = conn.read_u8().await? as usize;
     let mut buf = vec![0u8; n];
-    reader
-        .read_exact(&mut buf)
+    conn.read_exact(&mut buf)
         .await
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
 
@@ -197,7 +242,7 @@ async fn connect_tcp_tunnel<S: AsyncWrite + Send + Unpin, R: AsyncRead + Send + 
         .ok()
         .and_then(|addr| addr.parse::<SocketAddr>().ok())
     {
-        Ok((bind, writer, reader))
+        Ok((bind, conn))
     } else {
         Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -215,8 +260,9 @@ pub async fn start_udp_tunnel<
     mut udp: U,
 ) -> std::io::Result<()> {
     match connect_udp_tunnel(into).await {
-        Ok((writer, reader)) => {
+        Ok(conn) => {
             udp.response_bind_ok().await?;
+            let (writer, reader) = conn.split();
             udp.copy_bidirectional(reader, writer).await
         }
         Err(error) => {
@@ -231,20 +277,18 @@ async fn connect_udp_tunnel<
     R: AsyncReadDatagram + AsyncRead + Send + Unpin,
 >(
     into: impl IntoTunnel<S, R>,
-) -> std::io::Result<(S, R)> {
-    let conn = into.into_tunnel().await?;
-    let (mut writer, mut reader) = conn.into_split();
+) -> std::io::Result<Tunnel<S, R>> {
+    let mut conn = into.into_tunnel().await?;
 
-    writer.write_u8(0).await?;
+    conn.write_u8(0).await?;
 
-    let n = reader.read_u8().await? as usize;
+    let n = conn.read_u8().await? as usize;
     let mut buf = vec![0u8; n];
-    reader
-        .read_exact(&mut buf)
+    conn.read_exact(&mut buf)
         .await
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
 
-    Ok((writer, reader))
+    Ok(conn)
 }
 
 pub async fn handle_tunnel<
