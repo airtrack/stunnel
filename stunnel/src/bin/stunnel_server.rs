@@ -2,8 +2,15 @@ use std::{env, fs};
 
 use log::{error, info};
 use quinn::Connection;
-use stunnel::{quic, tlstcp, tunnel::handle_tunnel};
-use tokio::runtime::Runtime;
+use stunnel::{
+    quic, tlstcp,
+    tunnel::{Incoming, accept, copy_bidirectional_udp_socket},
+};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, copy_bidirectional},
+    net::{TcpStream, UdpSocket},
+    runtime::Runtime,
+};
 
 async fn tlstcp_server(config: Config) -> std::io::Result<()> {
     let tlstcp_config = tlstcp::server::Config {
@@ -118,6 +125,25 @@ async fn handle_s2n_conn(mut conn: s2n_quic::Connection) -> std::io::Result<()> 
                 })
                 .ok();
         });
+    }
+}
+
+async fn handle_tunnel<S, R>(send: S, recv: R) -> std::io::Result<(u64, u64)>
+where
+    S: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
+    match accept(send, recv).await? {
+        Incoming::UdpTunnel(mut tun) => {
+            let socket = UdpSocket::bind("0.0.0.0:0").await?;
+            tun.response(socket.local_addr()?).await?;
+            copy_bidirectional_udp_socket(tun, &socket).await
+        }
+        Incoming::TcpTunnel((mut tun, destination)) => {
+            let mut stream = TcpStream::connect(destination).await?;
+            tun.response(stream.local_addr()?).await?;
+            copy_bidirectional(&mut tun, &mut stream).await
+        }
     }
 }
 

@@ -3,14 +3,11 @@ use std::{net::SocketAddr, pin::pin};
 use async_trait::async_trait;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::{TcpStream, UdpSocket},
+    net::UdpSocket,
 };
 
 use crate::{
-    proxy::{
-        AsyncReadDatagram, AsyncWriteDatagram, TcpProxyConn, UdpProxyBind, copy_bidirectional,
-        copy_bidirectional_udp_socket,
-    },
+    proxy::{AsyncReadDatagram, AsyncWriteDatagram, TcpProxyConn, UdpProxyBind},
     tlstcp::{self, TlsReadStream, TlsWriteStream},
 };
 
@@ -20,12 +17,33 @@ pub struct Tunnel<S, R> {
 }
 
 impl<S, R> Tunnel<S, R> {
+    fn new(s: S, r: R) -> Self {
+        Self { s, r }
+    }
+
     fn split(self) -> (S, R) {
         (self.s, self.r)
     }
 }
 
-impl<S: Unpin, R: AsyncRead + Unpin> AsyncRead for Tunnel<S, R> {
+impl<S, R> Tunnel<S, R>
+where
+    S: AsyncWrite + Unpin,
+    R: Unpin,
+{
+    pub async fn response(&mut self, local_addr: SocketAddr) -> std::io::Result<()> {
+        let addr = local_addr.to_string();
+        self.s.write_u8(addr.len() as u8).await?;
+        self.s.write_all(addr.as_bytes()).await?;
+        Ok(())
+    }
+}
+
+impl<S, R> AsyncRead for Tunnel<S, R>
+where
+    S: Unpin,
+    R: AsyncRead + Unpin,
+{
     fn poll_read(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -35,7 +53,11 @@ impl<S: Unpin, R: AsyncRead + Unpin> AsyncRead for Tunnel<S, R> {
     }
 }
 
-impl<S: AsyncWrite + Unpin, R: Unpin> AsyncWrite for Tunnel<S, R> {
+impl<S, R> AsyncWrite for Tunnel<S, R>
+where
+    S: AsyncWrite + Unpin,
+    R: Unpin,
+{
     fn poll_write(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -152,10 +174,44 @@ impl AsyncWriteDatagram for tlstcp::TlsWriteStream {
     }
 }
 
-async fn recv_datagram<T: AsyncRead + Unpin>(
-    reader: &mut T,
-    buf: &mut [u8],
-) -> std::io::Result<(usize, SocketAddr)> {
+pub async fn copy_bidirectional_udp_socket<S, R>(
+    tun: Tunnel<S, R>,
+    socket: &UdpSocket,
+) -> std::io::Result<(u64, u64)>
+where
+    S: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
+    async fn r<S>(socket: &UdpSocket, send: &mut S) -> std::io::Result<()>
+    where
+        S: AsyncWrite + Unpin,
+    {
+        let mut buf = [0u8; 1500];
+        loop {
+            let (n, from) = socket.recv_from(&mut buf).await?;
+            send_datagram(send, &buf[..n], from).await?;
+        }
+    }
+
+    async fn w<R>(socket: &UdpSocket, recv: &mut R) -> std::io::Result<()>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let mut buf = [0u8; 1500];
+        loop {
+            let (n, target) = recv_datagram(recv, &mut buf).await?;
+            socket.send_to(&buf[..n], target).await?;
+        }
+    }
+
+    let (mut send, mut recv) = tun.split();
+    futures::try_join!(r(socket, &mut send), w(socket, &mut recv)).map(|_| (0, 0))
+}
+
+async fn recv_datagram<T>(reader: &mut T, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)>
+where
+    T: AsyncRead + Unpin,
+{
     let n = reader.read_u8().await? as usize;
     let mut addr = vec![0u8; n];
     reader
@@ -188,11 +244,10 @@ async fn recv_datagram<T: AsyncRead + Unpin>(
     }
 }
 
-async fn send_datagram<T: AsyncWrite + Unpin>(
-    writer: &mut T,
-    buf: &[u8],
-    addr: SocketAddr,
-) -> std::io::Result<usize> {
+async fn send_datagram<T>(writer: &mut T, buf: &[u8], addr: SocketAddr) -> std::io::Result<usize>
+where
+    T: AsyncWrite + Unpin,
+{
     let addr = addr.to_string();
     writer.write_u8(addr.len() as u8).await?;
     writer.write_all(addr.as_bytes()).await?;
@@ -201,15 +256,16 @@ async fn send_datagram<T: AsyncWrite + Unpin>(
     Ok(buf.len())
 }
 
-pub async fn start_tcp_tunnel<
-    S: AsyncWrite + Send + Unpin,
-    R: AsyncRead + Send + Unpin,
-    T: TcpProxyConn,
->(
+pub async fn start_tcp_tunnel<S, R, T>(
     into: impl IntoTunnel<S, R>,
     target: &str,
     tcp: &mut T,
-) -> std::io::Result<(u64, u64)> {
+) -> std::io::Result<(u64, u64)>
+where
+    S: AsyncWrite + Send + Unpin,
+    R: AsyncRead + Send + Unpin,
+    T: TcpProxyConn,
+{
     match connect_tcp_tunnel(into, target).await {
         Ok((bind, conn)) => {
             tcp.response_connect_ok(bind).await?;
@@ -223,10 +279,14 @@ pub async fn start_tcp_tunnel<
     }
 }
 
-async fn connect_tcp_tunnel<S: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin>(
+async fn connect_tcp_tunnel<S, R>(
     into: impl IntoTunnel<S, R>,
     target: &str,
-) -> std::io::Result<(SocketAddr, Tunnel<S, R>)> {
+) -> std::io::Result<(SocketAddr, Tunnel<S, R>)>
+where
+    S: AsyncWrite + Send + Unpin,
+    R: AsyncRead + Send + Unpin,
+{
     let mut conn = into.into_tunnel().await?;
 
     conn.write_u8(target.len() as u8).await?;
@@ -251,14 +311,15 @@ async fn connect_tcp_tunnel<S: AsyncWrite + Send + Unpin, R: AsyncRead + Send + 
     }
 }
 
-pub async fn start_udp_tunnel<
+pub async fn start_udp_tunnel<S, R, U>(
+    into: impl IntoTunnel<S, R>,
+    mut udp: U,
+) -> std::io::Result<()>
+where
     S: AsyncWriteDatagram + AsyncWrite + Send + Unpin,
     R: AsyncReadDatagram + AsyncRead + Send + Unpin,
     U: UdpProxyBind,
->(
-    into: impl IntoTunnel<S, R>,
-    mut udp: U,
-) -> std::io::Result<()> {
+{
     match connect_udp_tunnel(into).await {
         Ok(conn) => {
             udp.response_bind_ok().await?;
@@ -272,12 +333,11 @@ pub async fn start_udp_tunnel<
     }
 }
 
-async fn connect_udp_tunnel<
-    S: AsyncWriteDatagram + AsyncWrite + Send + Unpin,
-    R: AsyncReadDatagram + AsyncRead + Send + Unpin,
->(
-    into: impl IntoTunnel<S, R>,
-) -> std::io::Result<Tunnel<S, R>> {
+async fn connect_udp_tunnel<S, R>(into: impl IntoTunnel<S, R>) -> std::io::Result<Tunnel<S, R>>
+where
+    S: AsyncWrite + Send + Unpin,
+    R: AsyncRead + Send + Unpin,
+{
     let mut conn = into.into_tunnel().await?;
 
     conn.write_u8(0).await?;
@@ -291,34 +351,30 @@ async fn connect_udp_tunnel<
     Ok(conn)
 }
 
-pub async fn handle_tunnel<
-    R: AsyncReadDatagram + AsyncRead + Unpin,
-    W: AsyncWriteDatagram + AsyncWrite + Unpin,
->(
-    writer: &mut W,
-    reader: &mut R,
-) -> std::io::Result<(u64, u64)> {
-    let n = reader.read_u8().await? as usize;
+pub enum Incoming<S, R> {
+    UdpTunnel(Tunnel<S, R>),
+    TcpTunnel((Tunnel<S, R>, String)),
+}
+
+pub async fn accept<S, R>(send: S, mut recv: R) -> std::io::Result<Incoming<S, R>>
+where
+    S: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
+    let n = recv.read_u8().await? as usize;
 
     if n == 0 {
-        let socket = UdpSocket::bind("0.0.0.0:0").await?;
-        let addr = socket.local_addr()?.to_string();
-        writer.write_u8(addr.len() as u8).await?;
-        writer.write_all(addr.as_bytes()).await?;
-        copy_bidirectional_udp_socket(&socket, reader, writer).await
+        let tun = Tunnel::new(send, recv);
+        Ok(Incoming::UdpTunnel(tun))
     } else {
         let mut buf = vec![0u8; n];
-        reader
-            .read_exact(&mut buf)
+        recv.read_exact(&mut buf)
             .await
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
 
-        if let Some(addr) = std::str::from_utf8(&buf).ok() {
-            let mut stream = TcpStream::connect(addr).await?;
-            let addr = stream.local_addr()?.to_string();
-            writer.write_u8(addr.len() as u8).await?;
-            writer.write_all(addr.as_bytes()).await?;
-            copy_bidirectional(&mut stream, reader, writer).await
+        if let Some(addr) = String::from_utf8(buf).ok() {
+            let tun = Tunnel::new(send, recv);
+            Ok(Incoming::TcpTunnel((tun, addr)))
         } else {
             Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,

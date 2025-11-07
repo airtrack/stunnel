@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use async_trait::async_trait;
 use tokio::{
     io::{self, AsyncRead, AsyncWrite, AsyncWriteExt},
-    net::{TcpStream, UdpSocket},
+    net::TcpStream,
 };
 
 pub mod http;
@@ -75,28 +75,4 @@ pub async fn copy_bidirectional<R: AsyncRead + Unpin + ?Sized, W: AsyncWrite + U
     };
 
     futures::try_join!(r, w)
-}
-
-pub async fn copy_bidirectional_udp_socket<R: AsyncReadDatagram, W: AsyncWriteDatagram>(
-    socket: &UdpSocket,
-    reader: &mut R,
-    writer: &mut W,
-) -> std::io::Result<(u64, u64)> {
-    async fn r<W: AsyncWriteDatagram>(socket: &UdpSocket, writer: &mut W) -> std::io::Result<()> {
-        let mut buf = [0u8; 1500];
-        loop {
-            let (n, from) = socket.recv_from(&mut buf).await?;
-            writer.send(&buf[..n], from).await?;
-        }
-    }
-
-    async fn w<R: AsyncReadDatagram>(socket: &UdpSocket, reader: &mut R) -> std::io::Result<()> {
-        let mut buf = [0u8; 1500];
-        loop {
-            let (n, target) = reader.recv(&mut buf).await?;
-            socket.send_to(&buf[..n], target).await?;
-        }
-    }
-
-    futures::try_join!(r(socket, writer), w(socket, reader)).map(|_| (0, 0))
 }
