@@ -21,7 +21,7 @@ impl<S, R> Tunnel<S, R> {
         Self { s, r }
     }
 
-    fn split(self) -> (S, R) {
+    pub fn split(self) -> (S, R) {
         (self.s, self.r)
     }
 }
@@ -174,6 +174,30 @@ impl AsyncWriteDatagram for tlstcp::TlsWriteStream {
     }
 }
 
+#[async_trait]
+pub trait AsyncWriteDatagramExt: AsyncWrite {
+    async fn send_datagram(&mut self, buf: &[u8], addr: SocketAddr) -> std::io::Result<usize>
+    where
+        Self: Unpin,
+    {
+        send_datagram(self, buf, addr).await
+    }
+}
+
+impl<S: AsyncWrite> AsyncWriteDatagramExt for S {}
+
+#[async_trait]
+pub trait AsyncReadDatagramExt: AsyncRead {
+    async fn recv_datagram(&mut self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)>
+    where
+        Self: Unpin,
+    {
+        recv_datagram(self, buf).await
+    }
+}
+
+impl<R: AsyncRead> AsyncReadDatagramExt for R {}
+
 pub async fn copy_bidirectional_udp_socket<S, R>(
     tun: Tunnel<S, R>,
     socket: &UdpSocket,
@@ -210,7 +234,7 @@ where
 
 async fn recv_datagram<T>(reader: &mut T, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)>
 where
-    T: AsyncRead + Unpin,
+    T: AsyncRead + Unpin + ?Sized,
 {
     let n = reader.read_u8().await? as usize;
     let mut addr = vec![0u8; n];
@@ -246,7 +270,7 @@ where
 
 async fn send_datagram<T>(writer: &mut T, buf: &[u8], addr: SocketAddr) -> std::io::Result<usize>
 where
-    T: AsyncWrite + Unpin,
+    T: AsyncWrite + Unpin + ?Sized,
 {
     let addr = addr.to_string();
     writer.write_u8(addr.len() as u8).await?;
@@ -279,7 +303,7 @@ where
     }
 }
 
-async fn connect_tcp_tunnel<S, R>(
+pub async fn connect_tcp_tunnel<S, R>(
     into: impl IntoTunnel<S, R>,
     target: &str,
 ) -> std::io::Result<(SocketAddr, Tunnel<S, R>)>
@@ -333,7 +357,7 @@ where
     }
 }
 
-async fn connect_udp_tunnel<S, R>(into: impl IntoTunnel<S, R>) -> std::io::Result<Tunnel<S, R>>
+pub async fn connect_udp_tunnel<S, R>(into: impl IntoTunnel<S, R>) -> std::io::Result<Tunnel<S, R>>
 where
     S: AsyncWrite + Send + Unpin,
     R: AsyncRead + Send + Unpin,

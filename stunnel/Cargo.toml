@@ -5,6 +5,8 @@ authors = ["airtrack <airtrack.sk@gmail.com>"]
 edition = "2024"
 
 [dependencies]
+socks5 = { path = "../socks5" }
+httpproxy = { path = "../httpproxy" }
 chrono = "0.4"
 log = "0.4"
 env_logger = "0.11"

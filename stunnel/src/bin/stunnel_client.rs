@@ -2,14 +2,14 @@ use std::net::SocketAddr;
 use std::{env, fs};
 
 use log::{error, info};
-use stunnel::proxy::{
-    AsyncReadDatagram, AsyncWriteDatagram, Proxy, ProxyType, TcpProxyConn, UdpProxyBind,
+use socks5::{AcceptResult, Address, UdpSocket, UdpSocketBuf, UdpSocketHolder};
+use stunnel::tunnel::{
+    AsyncReadDatagramExt, AsyncWriteDatagramExt, IntoTunnel, connect_tcp_tunnel, connect_udp_tunnel,
 };
-use stunnel::proxy::{http::HttpProxy, socks5::Socks5Proxy};
-use stunnel::tunnel::{IntoTunnel, start_tcp_tunnel, start_udp_tunnel};
 use stunnel::{quic, tlstcp};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::{net::TcpListener, runtime::Runtime};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, copy_bidirectional};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::runtime::Runtime;
 
 trait State {
     fn in_good_condition(&mut self) -> std::io::Result<()>;
@@ -54,8 +54,8 @@ async fn tlstcp_client(
     };
 
     let connector = tlstcp::client::new(&tlstcp_config);
-    let h = proxy_tunnel(HttpProxy, &connector, &http_listener);
-    let s = proxy_tunnel(Socks5Proxy, &connector, &socks5_listener);
+    let h = accept_http_tunnels(&http_listener, &connector);
+    let s = accept_socks5_tunnels(&socks5_listener, &connector);
 
     futures::try_join!(h, s).map(|_| ())
 }
@@ -79,8 +79,8 @@ async fn quinn_client(
 
         match conn.await {
             Ok(conn) => {
-                let h = proxy_tunnel(HttpProxy, &conn, &http_listener);
-                let s = proxy_tunnel(Socks5Proxy, &conn, &socks5_listener);
+                let h = accept_http_tunnels(&http_listener, &conn);
+                let s = accept_socks5_tunnels(&socks5_listener, &conn);
 
                 futures::try_join!(h, s)
                     .inspect_err(|error| {
@@ -118,8 +118,8 @@ async fn s2n_client(
             Ok(mut conn) => {
                 if conn.keep_alive(true).is_ok() {
                     let conn = conn.handle();
-                    let h = proxy_tunnel(HttpProxy, &conn, &http_listener);
-                    let s = proxy_tunnel(Socks5Proxy, &conn, &socks5_listener);
+                    let h = accept_http_tunnels(&http_listener, &conn);
+                    let s = accept_socks5_tunnels(&socks5_listener, &conn);
 
                     futures::try_join!(h, s)
                         .inspect_err(|error| {
@@ -135,45 +135,144 @@ async fn s2n_client(
     }
 }
 
-async fn proxy_tunnel<
-    T: TcpProxyConn + Send,
-    U: UdpProxyBind + Send,
-    S: AsyncWriteDatagram + AsyncWrite + Send + Unpin,
-    R: AsyncReadDatagram + AsyncRead + Send + Unpin,
->(
-    proxy: impl Proxy<T, U> + Sync + Send + Copy + 'static,
-    into: &(impl IntoTunnel<S, R> + State + Clone + Send + 'static),
-    listener: &TcpListener,
-) -> std::io::Result<()> {
+async fn accept_http_tunnels<I, S, R>(listener: &TcpListener, into: &I) -> std::io::Result<()>
+where
+    I: IntoTunnel<S, R> + State + Clone + Send + 'static,
+    S: AsyncWrite + Send + Unpin,
+    R: AsyncRead + Send + Unpin,
+{
     let mut into = into.clone();
-    while let Ok((stream, _)) = listener.accept().await {
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+
         into.in_good_condition()?;
         let into = into.clone();
 
         tokio::spawn(async move {
-            match proxy.accept(stream).await {
-                Ok(ProxyType::Tcp(mut tcp)) => {
-                    let target = tcp.target_host().to_string();
-                    start_tcp_tunnel(into, &target, &mut tcp)
-                        .await
-                        .inspect_err(|error| {
-                            error!("tcp to {}, error: {}", target, error);
-                        })
-                        .ok();
+            run_http_tunnel(stream, into)
+                .await
+                .inspect_err(|e| {
+                    error!("http tunnel error: {}", e);
+                })
+                .ok();
+        });
+    }
+}
+
+async fn run_http_tunnel<I, S, R>(stream: TcpStream, into: I) -> std::io::Result<()>
+where
+    I: IntoTunnel<S, R> + State + Clone + Send + 'static,
+    S: AsyncWrite + Send + Unpin,
+    R: AsyncRead + Send + Unpin,
+{
+    let incoming = httpproxy::accept(stream).await?;
+
+    match connect_tcp_tunnel(into, incoming.host()).await {
+        Ok((_, mut tun)) => {
+            let (mut stream, req) = incoming.response_200().await?;
+            if let Some(req) = req {
+                tun.write_all(&req).await?;
+            }
+            copy_bidirectional(&mut stream, &mut tun).await?;
+        }
+        Err(_) => {
+            incoming.response_404().await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn accept_socks5_tunnels<I, S, R>(listener: &TcpListener, into: &I) -> std::io::Result<()>
+where
+    I: IntoTunnel<S, R> + State + Clone + Send + 'static,
+    S: AsyncWrite + Send + Unpin,
+    R: AsyncRead + Send + Unpin,
+{
+    let mut into = into.clone();
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+
+        into.in_good_condition()?;
+        let into = into.clone();
+
+        tokio::spawn(async move {
+            run_socks5_tunnel(stream, into)
+                .await
+                .inspect_err(|e| {
+                    error!("socks5 tunnel error: {}", e);
+                })
+                .ok();
+        });
+    }
+}
+
+async fn run_socks5_tunnel<I, S, R>(stream: TcpStream, into: I) -> std::io::Result<()>
+where
+    I: IntoTunnel<S, R> + State + Clone + Send + 'static,
+    S: AsyncWrite + Send + Unpin,
+    R: AsyncRead + Send + Unpin,
+{
+    match socks5::accept(stream).await? {
+        AcceptResult::Connect(incoming) => {
+            let target = match incoming.destination() {
+                Address::Host(host) => host,
+                Address::Ip(addr) => &addr.to_string(),
+            };
+
+            match connect_tcp_tunnel(into, &target).await {
+                Ok((bind, mut tun)) => {
+                    let mut stream = incoming.reply_ok(bind).await?;
+                    copy_bidirectional(&mut stream, &mut tun).await?;
                 }
-                Ok(ProxyType::Udp(udp)) => {
-                    start_udp_tunnel(into, udp)
-                        .await
-                        .inspect_err(|error| {
-                            error!("udp bind error: {}", error);
-                        })
-                        .ok();
-                }
-                Err(error) => {
-                    error!("accept error: {}", error);
+                Err(_) => {
+                    incoming.reply_err().await?;
                 }
             }
-        });
+        }
+        AcceptResult::UdpAssociate(incoming) => {
+            let mut buf = UdpSocketBuf::new();
+            let (socket, holder, dst) = incoming.recv_wait(&mut buf).await?;
+
+            let tun = connect_udp_tunnel(into).await?;
+            let (send, recv) = tun.split();
+
+            async fn s<S>(
+                socket: &UdpSocket,
+                mut send: S,
+                mut buf: UdpSocketBuf,
+                addr: SocketAddr,
+            ) -> std::io::Result<()>
+            where
+                S: AsyncWrite + Send + Unpin,
+            {
+                send.send_datagram(buf.as_ref(), addr).await?;
+                loop {
+                    let addr = socket.recv(&mut buf).await?;
+                    send.send_datagram(buf.as_ref(), addr).await?;
+                }
+            }
+
+            async fn r<R>(socket: &UdpSocket, mut recv: R) -> std::io::Result<()>
+            where
+                R: AsyncRead + Send + Unpin,
+            {
+                let mut buf = UdpSocketBuf::new();
+                loop {
+                    let (n, addr) = recv.recv_datagram(buf.as_mut()).await?;
+                    buf.set_len(n);
+                    socket.send(&mut buf, addr).await?;
+                }
+            }
+
+            async fn h(mut holder: UdpSocketHolder) -> std::io::Result<()> {
+                holder.wait().await
+            }
+
+            futures::try_join!(s(&socket, send, buf, dst), r(&socket, recv), h(holder))?;
+        }
     }
 
     Ok(())
