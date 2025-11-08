@@ -4,7 +4,10 @@ use log::{error, info};
 use quinn::Connection;
 use stunnel::{
     quic, tlstcp,
-    tunnel::{AsyncReadDatagramExt, AsyncWriteDatagramExt, Incoming, Tunnel, accept},
+    tunnel::{
+        AsyncReadDatagramExt, AsyncWriteDatagramExt, Tunnel,
+        server::{Incoming, accept},
+    },
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, copy_bidirectional},

@@ -4,7 +4,8 @@ use std::{env, fs};
 use log::{error, info};
 use socks5::{AcceptResult, Address, UdpSocket, UdpSocketBuf, UdpSocketHolder};
 use stunnel::tunnel::{
-    AsyncReadDatagramExt, AsyncWriteDatagramExt, IntoTunnel, connect_tcp_tunnel, connect_udp_tunnel,
+    AsyncReadDatagramExt, AsyncWriteDatagramExt,
+    client::{IntoTunnel, connect_tcp_tunnel, connect_udp_tunnel},
 };
 use stunnel::{quic, tlstcp};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, copy_bidirectional};
