@@ -4,7 +4,7 @@ use log::{error, info};
 use quinn::Connection;
 use stunnel::{
     quic, tlstcp,
-    tunnel::{Incoming, accept, copy_bidirectional_udp_socket},
+    tunnel::{AsyncReadDatagramExt, AsyncWriteDatagramExt, Incoming, Tunnel, accept},
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, copy_bidirectional},
@@ -130,8 +130,8 @@ async fn handle_s2n_conn(mut conn: s2n_quic::Connection) -> std::io::Result<()> 
 
 async fn handle_tunnel<S, R>(send: S, recv: R) -> std::io::Result<(u64, u64)>
 where
-    S: AsyncWrite + Unpin,
-    R: AsyncRead + Unpin,
+    S: AsyncWrite + Send + Unpin,
+    R: AsyncRead + Send + Unpin,
 {
     match accept(send, recv).await? {
         Incoming::UdpTunnel(mut tun) => {
@@ -145,6 +145,40 @@ where
             copy_bidirectional(&mut tun, &mut stream).await
         }
     }
+}
+
+async fn copy_bidirectional_udp_socket<S, R>(
+    tun: Tunnel<S, R>,
+    socket: &UdpSocket,
+) -> std::io::Result<(u64, u64)>
+where
+    S: AsyncWrite + Send + Unpin,
+    R: AsyncRead + Send + Unpin,
+{
+    async fn r<S>(socket: &UdpSocket, send: &mut S) -> std::io::Result<()>
+    where
+        S: AsyncWrite + Send + Unpin,
+    {
+        let mut buf = [0u8; 1500];
+        loop {
+            let (n, from) = socket.recv_from(&mut buf).await?;
+            send.send_datagram(&buf[..n], from).await?;
+        }
+    }
+
+    async fn w<R>(socket: &UdpSocket, recv: &mut R) -> std::io::Result<()>
+    where
+        R: AsyncRead + Send + Unpin,
+    {
+        let mut buf = [0u8; 1500];
+        loop {
+            let (n, target) = recv.recv_datagram(&mut buf).await?;
+            socket.send_to(&buf[..n], target).await?;
+        }
+    }
+
+    let (mut send, mut recv) = tun.split();
+    futures::try_join!(r(socket, &mut send), w(socket, &mut recv)).map(|_| (0, 0))
 }
 
 #[derive(serde::Deserialize, Clone)]

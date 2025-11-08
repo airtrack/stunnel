@@ -1,10 +1,7 @@
 use std::{net::SocketAddr, pin::pin};
 
 use async_trait::async_trait;
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::UdpSocket,
-};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::tlstcp::{self, TlsReadStream, TlsWriteStream};
 
@@ -152,40 +149,6 @@ pub trait AsyncReadDatagramExt: AsyncRead {
 }
 
 impl<R: AsyncRead> AsyncReadDatagramExt for R {}
-
-pub async fn copy_bidirectional_udp_socket<S, R>(
-    tun: Tunnel<S, R>,
-    socket: &UdpSocket,
-) -> std::io::Result<(u64, u64)>
-where
-    S: AsyncWrite + Unpin,
-    R: AsyncRead + Unpin,
-{
-    async fn r<S>(socket: &UdpSocket, send: &mut S) -> std::io::Result<()>
-    where
-        S: AsyncWrite + Unpin,
-    {
-        let mut buf = [0u8; 1500];
-        loop {
-            let (n, from) = socket.recv_from(&mut buf).await?;
-            send_datagram(send, &buf[..n], from).await?;
-        }
-    }
-
-    async fn w<R>(socket: &UdpSocket, recv: &mut R) -> std::io::Result<()>
-    where
-        R: AsyncRead + Unpin,
-    {
-        let mut buf = [0u8; 1500];
-        loop {
-            let (n, target) = recv_datagram(recv, &mut buf).await?;
-            socket.send_to(&buf[..n], target).await?;
-        }
-    }
-
-    let (mut send, mut recv) = tun.split();
-    futures::try_join!(r(socket, &mut send), w(socket, &mut recv)).map(|_| (0, 0))
-}
 
 async fn recv_datagram<T>(reader: &mut T, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)>
 where
