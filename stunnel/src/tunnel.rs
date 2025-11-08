@@ -6,10 +6,7 @@ use tokio::{
     net::UdpSocket,
 };
 
-use crate::{
-    proxy::{AsyncReadDatagram, AsyncWriteDatagram, TcpProxyConn, UdpProxyBind},
-    tlstcp::{self, TlsReadStream, TlsWriteStream},
-};
+use crate::tlstcp::{self, TlsReadStream, TlsWriteStream};
 
 pub struct Tunnel<S, R> {
     s: S,
@@ -107,20 +104,6 @@ impl IntoTunnel<quinn::SendStream, quinn::RecvStream> for quinn::Connection {
 }
 
 #[async_trait]
-impl AsyncReadDatagram for quinn::RecvStream {
-    async fn recv(&mut self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
-        recv_datagram(self, buf).await
-    }
-}
-
-#[async_trait]
-impl AsyncWriteDatagram for quinn::SendStream {
-    async fn send(&mut self, buf: &[u8], addr: SocketAddr) -> std::io::Result<usize> {
-        send_datagram(self, buf, addr).await
-    }
-}
-
-#[async_trait]
 impl IntoTunnel<s2n_quic::stream::SendStream, s2n_quic::stream::ReceiveStream>
     for s2n_quic::connection::Handle
 {
@@ -135,20 +118,6 @@ impl IntoTunnel<s2n_quic::stream::SendStream, s2n_quic::stream::ReceiveStream>
 }
 
 #[async_trait]
-impl AsyncReadDatagram for s2n_quic::stream::ReceiveStream {
-    async fn recv(&mut self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
-        recv_datagram(self, buf).await
-    }
-}
-
-#[async_trait]
-impl AsyncWriteDatagram for s2n_quic::stream::SendStream {
-    async fn send(&mut self, buf: &[u8], addr: SocketAddr) -> std::io::Result<usize> {
-        send_datagram(self, buf, addr).await
-    }
-}
-
-#[async_trait]
 impl IntoTunnel<TlsWriteStream, TlsReadStream> for tlstcp::Connector {
     async fn into_tunnel(self) -> std::io::Result<Tunnel<TlsWriteStream, TlsReadStream>> {
         let stream = self.connect().await?;
@@ -157,20 +126,6 @@ impl IntoTunnel<TlsWriteStream, TlsReadStream> for tlstcp::Connector {
             s: write_half,
             r: read_half,
         })
-    }
-}
-
-#[async_trait]
-impl AsyncReadDatagram for tlstcp::TlsReadStream {
-    async fn recv(&mut self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
-        recv_datagram(self, buf).await
-    }
-}
-
-#[async_trait]
-impl AsyncWriteDatagram for tlstcp::TlsWriteStream {
-    async fn send(&mut self, buf: &[u8], addr: SocketAddr) -> std::io::Result<usize> {
-        send_datagram(self, buf, addr).await
     }
 }
 
@@ -280,29 +235,6 @@ where
     Ok(buf.len())
 }
 
-pub async fn start_tcp_tunnel<S, R, T>(
-    into: impl IntoTunnel<S, R>,
-    target: &str,
-    tcp: &mut T,
-) -> std::io::Result<(u64, u64)>
-where
-    S: AsyncWrite + Send + Unpin,
-    R: AsyncRead + Send + Unpin,
-    T: TcpProxyConn,
-{
-    match connect_tcp_tunnel(into, target).await {
-        Ok((bind, conn)) => {
-            tcp.response_connect_ok(bind).await?;
-            let (mut writer, mut reader) = conn.split();
-            tcp.copy_bidirectional(&mut reader, &mut writer).await
-        }
-        Err(e) => {
-            tcp.response_connect_err().await.ok();
-            Err(e)
-        }
-    }
-}
-
 pub async fn connect_tcp_tunnel<S, R>(
     into: impl IntoTunnel<S, R>,
     target: &str,
@@ -332,28 +264,6 @@ where
             std::io::ErrorKind::InvalidData,
             "invalid addr",
         ))
-    }
-}
-
-pub async fn start_udp_tunnel<S, R, U>(
-    into: impl IntoTunnel<S, R>,
-    mut udp: U,
-) -> std::io::Result<()>
-where
-    S: AsyncWriteDatagram + AsyncWrite + Send + Unpin,
-    R: AsyncReadDatagram + AsyncRead + Send + Unpin,
-    U: UdpProxyBind,
-{
-    match connect_udp_tunnel(into).await {
-        Ok(conn) => {
-            udp.response_bind_ok().await?;
-            let (writer, reader) = conn.split();
-            udp.copy_bidirectional(reader, writer).await
-        }
-        Err(error) => {
-            udp.response_bind_err().await.ok();
-            Err(error)
-        }
     }
 }
 
