@@ -1,6 +1,6 @@
 [package]
 name = "stunnel"
-version = "2.1.0"
+version = "2.2.0"
 authors = ["airtrack <airtrack.sk@gmail.com>"]
 edition = "2024"
 
