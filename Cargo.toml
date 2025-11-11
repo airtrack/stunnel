@@ -5,8 +5,8 @@ authors = ["airtrack <airtrack.sk@gmail.com>"]
 edition = "2024"
 
 [dependencies]
-socks5 = { git = "https://github.com/airtrack/sproxy.git" }
-httpproxy = { git = "https://github.com/airtrack/sproxy.git" }
+socks5 = { git = "https://github.com/airtrack/sproxy.git", tag = "0.1.0" }
+httpproxy = { git = "https://github.com/airtrack/sproxy.git", tag = "0.1.0" }
 chrono = "0.4"
 log = "0.4"
 env_logger = "0.11"
