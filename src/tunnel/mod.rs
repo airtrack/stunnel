@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, pin::pin};
+use std::{net::SocketAddr, pin::Pin};
 
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -40,11 +40,11 @@ where
     R: AsyncRead + Unpin,
 {
     fn poll_read(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        pin!(&mut self.get_mut().r).poll_read(cx, buf)
+        Pin::new(&mut self.r).poll_read(cx, buf)
     }
 }
 
@@ -54,33 +54,33 @@ where
     R: Unpin,
 {
     fn poll_write(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> std::task::Poll<Result<usize, std::io::Error>> {
-        pin!(&mut self.get_mut().s).poll_write(cx, buf)
+        Pin::new(&mut self.s).poll_write(cx, buf)
     }
 
     fn poll_write_vectored(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         bufs: &[std::io::IoSlice<'_>],
     ) -> std::task::Poll<Result<usize, std::io::Error>> {
-        pin!(&mut self.get_mut().s).poll_write_vectored(cx, bufs)
+        Pin::new(&mut self.s).poll_write_vectored(cx, bufs)
     }
 
     fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), std::io::Error>> {
-        pin!(&mut self.get_mut().s).poll_flush(cx)
+        Pin::new(&mut self.s).poll_flush(cx)
     }
 
     fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), std::io::Error>> {
-        pin!(&mut self.get_mut().s).poll_shutdown(cx)
+        Pin::new(&mut self.s).poll_shutdown(cx)
     }
 
     fn is_write_vectored(&self) -> bool {
