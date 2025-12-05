@@ -74,6 +74,13 @@ async fn quinn_client(
         loss_threshold: config.quic_loss_threshold,
     };
 
+    async fn wait_conn_error(conn: &quinn::Connection) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            conn.closed().await,
+        ))
+    }
+
     loop {
         let endpoint = quic::quinn::client::new(&client_config).unwrap();
         let conn = endpoint.connect(addr, &config.server_name).unwrap();
@@ -82,15 +89,16 @@ async fn quinn_client(
             Ok(conn) => {
                 let h = accept_http_tunnels(&http_listener, &conn);
                 let s = accept_socks5_tunnels(&socks5_listener, &conn);
+                let w = wait_conn_error(&conn);
 
-                futures::try_join!(h, s)
+                futures::try_join!(h, s, w)
                     .inspect_err(|error| {
-                        error!("tunnel error: {}", error);
+                        error!("quic connection {} broken: {error}", conn.stable_id());
                     })
                     .ok();
             }
             Err(error) => {
-                error!("connect {} error: {}", addr, error);
+                error!("quic connect error: {error}");
             }
         }
     }
@@ -109,13 +117,13 @@ async fn s2n_client(
         loss_threshold: config.quic_loss_threshold,
     };
 
+    let endpoint = quic::s2n_quic::client::new(&client_config).unwrap();
+
     loop {
-        let endpoint = quic::s2n_quic::client::new(&client_config).unwrap();
         let connect =
             s2n_quic::client::Connect::new(addr).with_server_name(config.server_name.clone());
-        let conn = endpoint.connect(connect);
 
-        match conn.await {
+        match endpoint.connect(connect).await {
             Ok(mut conn) => {
                 if conn.keep_alive(true).is_ok() {
                     let conn = conn.handle();
@@ -124,13 +132,13 @@ async fn s2n_client(
 
                     futures::try_join!(h, s)
                         .inspect_err(|error| {
-                            error!("tunnel error: {}", error);
+                            error!("quic connection {} broken: {error}", conn.id());
                         })
                         .ok();
                 }
             }
             Err(error) => {
-                error!("connect {} error: {}", addr, error);
+                error!("quic connect error: {error}");
             }
         }
     }
@@ -153,8 +161,8 @@ where
         tokio::spawn(async move {
             run_http_tunnel(stream, into)
                 .await
-                .inspect_err(|e| {
-                    error!("http tunnel error: {}", e);
+                .inspect_err(|error| {
+                    error!("http proxy connection error: {error}");
                 })
                 .ok();
         });
@@ -177,8 +185,9 @@ where
             }
             copy_bidirectional(&mut stream, &mut tun).await?;
         }
-        Err(_) => {
+        Err(error) => {
             incoming.response_404().await?;
+            return Err(error);
         }
     }
 
@@ -202,8 +211,8 @@ where
         tokio::spawn(async move {
             run_socks5_tunnel(stream, into)
                 .await
-                .inspect_err(|e| {
-                    error!("socks5 tunnel error: {}", e);
+                .inspect_err(|error| {
+                    error!("socks5 proxy connection error: {error}");
                 })
                 .ok();
         });
@@ -228,8 +237,9 @@ where
                     let mut stream = incoming.reply_ok(bind).await?;
                     copy_bidirectional(&mut stream, &mut tun).await?;
                 }
-                Err(_) => {
+                Err(error) => {
                     incoming.reply_err().await?;
+                    return Err(error);
                 }
             }
         }
@@ -291,10 +301,39 @@ struct Config {
 
     #[serde(default = "default_quic_loss_threshold")]
     quic_loss_threshold: u32,
+
+    #[cfg(target_os = "macos")]
+    #[serde(default)]
+    macos_logging: MacOsLogging,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(serde::Deserialize, Default)]
+struct MacOsLogging {
+    enable: bool,
+    subsystem: String,
 }
 
 fn default_quic_loss_threshold() -> u32 {
     20
+}
+
+fn init_log(_config: &Config) {
+    #[cfg(target_os = "macos")]
+    if _config.macos_logging.enable {
+        oslog::OsLogger::new(&_config.macos_logging.subsystem)
+            .level_filter(log::LevelFilter::Info)
+            .category_level_filter("", log::LevelFilter::Info)
+            .init()
+            .unwrap();
+        return;
+    }
+
+    env_logger::builder()
+        .format_timestamp(None)
+        .filter_level(log::LevelFilter::Info)
+        .parse_default_env()
+        .init();
 }
 
 fn main() {
@@ -304,16 +343,12 @@ fn main() {
         return;
     }
 
-    env_logger::builder()
-        .format_timestamp(None)
-        .filter_level(log::LevelFilter::Info)
-        .parse_default_env()
-        .init();
-    info!("starting up");
-
     let content = String::from_utf8(fs::read(&args.nth(1).unwrap()).unwrap()).unwrap();
     let config: Config = toml::from_str(&content).unwrap();
     let rt = Runtime::new().unwrap();
+
+    init_log(&config);
+    info!("starting up");
 
     rt.block_on(async move {
         let socks5_listener = TcpListener::bind(&config.socks5_listen).await.unwrap();
