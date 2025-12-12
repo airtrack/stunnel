@@ -7,4 +7,9 @@ private_key = "private_key.pem"
 
 # tlstcp or quic or s2n-quic
 tunnel_type = "tlstcp"
-# quic_loss_threshold = 2
+
+# quic config for s2n-quic
+# quic = { loss_threshold = 20 }
+
+# logging to the ULS on macOS
+# macos_logging = { enable = false, subsystem = "stunnel" }

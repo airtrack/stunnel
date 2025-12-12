@@ -92,7 +92,7 @@ async fn quinn_client(
         addr: "0.0.0.0:0".to_string(),
         cert: config.server_cert,
         priv_key: config.private_key,
-        loss_threshold: config.quic_loss_threshold,
+        loss_threshold: config.quic.loss_threshold,
     };
 
     async fn wait_conn_error(conn: &quinn::Connection) -> std::io::Result<()> {
@@ -135,7 +135,7 @@ async fn s2n_client(
         addr: "0.0.0.0:0".to_string(),
         cert: config.server_cert,
         priv_key: config.private_key,
-        loss_threshold: config.quic_loss_threshold,
+        loss_threshold: config.quic.loss_threshold,
     };
 
     let endpoint = quic::s2n_quic::client::new(&client_config).unwrap();
@@ -322,12 +322,23 @@ struct Config {
     private_key: String,
     tunnel_type: String,
 
-    #[serde(default = "default_quic_loss_threshold")]
-    quic_loss_threshold: u32,
+    #[serde(default)]
+    quic: QuicConfig,
 
     #[cfg(target_os = "macos")]
     #[serde(default)]
     macos_logging: MacOsLogging,
+}
+
+#[derive(serde::Deserialize)]
+struct QuicConfig {
+    loss_threshold: u32,
+}
+
+impl Default for QuicConfig {
+    fn default() -> Self {
+        Self { loss_threshold: 20 }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -335,10 +346,6 @@ struct Config {
 struct MacOsLogging {
     enable: bool,
     subsystem: String,
-}
-
-fn default_quic_loss_threshold() -> u32 {
-    20
 }
 
 fn init_log(_config: &Config) {

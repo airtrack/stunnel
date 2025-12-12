@@ -45,7 +45,7 @@ async fn quinn_server(config: Config) -> std::io::Result<()> {
         addr: config.listen,
         cert: config.cert,
         priv_key: config.priv_key,
-        loss_threshold: config.quic_loss_threshold,
+        loss_threshold: config.quic.loss_threshold,
     };
     let endpoint = quic::quinn::server::new(&quic_config).unwrap();
 
@@ -88,7 +88,7 @@ async fn s2n_server(config: Config) -> std::io::Result<()> {
         addr: config.listen,
         cert: config.cert,
         priv_key: config.priv_key,
-        loss_threshold: config.quic_loss_threshold,
+        loss_threshold: config.quic.loss_threshold,
     };
     let mut endpoint = quic::s2n_quic::server::new(&quic_config).unwrap();
 
@@ -190,18 +190,23 @@ struct Config {
     priv_key: String,
     cert: String,
 
-    #[serde(default = "default_quic_server")]
-    quic_server: String,
-    #[serde(default = "default_quic_loss_threshold")]
-    quic_loss_threshold: u32,
+    #[serde(default)]
+    quic: QuicConfig,
 }
 
-fn default_quic_loss_threshold() -> u32 {
-    20
+#[derive(serde::Deserialize, Clone)]
+struct QuicConfig {
+    server_type: String,
+    loss_threshold: u32,
 }
 
-fn default_quic_server() -> String {
-    "s2n-quic".to_string()
+impl Default for QuicConfig {
+    fn default() -> Self {
+        Self {
+            server_type: "s2n-quic".to_string(),
+            loss_threshold: 20,
+        }
+    }
 }
 
 fn main() {
@@ -223,7 +228,7 @@ fn main() {
     let rt = Runtime::new().unwrap();
 
     rt.block_on(async move {
-        match config.quic_server.as_str() {
+        match config.quic.server_type.as_str() {
             "s2n-quic" => {
                 let t = tlstcp_server(config.clone());
                 let q = s2n_server(config);

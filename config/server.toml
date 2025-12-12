@@ -2,6 +2,5 @@ listen = "0.0.0.0:12345"
 priv_key = "private_key.pem"
 cert = "stunnel_cert.pem"
 
-# quic or s2n-quic
-# quic_server = "s2n-quic"
-# quic_loss_threshold = 2
+# quic config, server_type is "quic" or "s2n-quic"
+# quic = { server_type = "s2n-quic", loss_threshold = 20 }
