@@ -13,16 +13,31 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Runtime;
 
 trait State {
+    type Id: std::fmt::Display + Send + Copy;
+
+    fn underlying_id(&self) -> Self::Id;
     fn in_good_condition(&mut self) -> std::io::Result<()>;
 }
 
 impl State for tlstcp::Connector {
+    type Id = &'static str;
+
+    fn underlying_id(&self) -> Self::Id {
+        "tlstcp"
+    }
+
     fn in_good_condition(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }
 
 impl State for quinn::Connection {
+    type Id = usize;
+
+    fn underlying_id(&self) -> Self::Id {
+        self.stable_id()
+    }
+
     fn in_good_condition(&mut self) -> std::io::Result<()> {
         if let Some(error) = self.close_reason() {
             return Err(std::io::Error::new(
@@ -36,6 +51,12 @@ impl State for quinn::Connection {
 }
 
 impl State for s2n_quic::connection::Handle {
+    type Id = u64;
+
+    fn underlying_id(&self) -> Self::Id {
+        self.id()
+    }
+
     fn in_good_condition(&mut self) -> std::io::Result<()> {
         self.keep_alive(true)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::ConnectionReset, error))
@@ -151,6 +172,7 @@ where
     R: AsyncRead + Send + Unpin,
 {
     let mut into = into.clone();
+    let id = into.underlying_id();
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -162,7 +184,7 @@ where
             run_http_tunnel(stream, into)
                 .await
                 .inspect_err(|error| {
-                    error!("http proxy connection error: {error}");
+                    error!("http proxy connection(on underlying {id}) error: {error}");
                 })
                 .ok();
         });
@@ -201,6 +223,7 @@ where
     R: AsyncRead + Send + Unpin,
 {
     let mut into = into.clone();
+    let id = into.underlying_id();
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -212,7 +235,7 @@ where
             run_socks5_tunnel(stream, into)
                 .await
                 .inspect_err(|error| {
-                    error!("socks5 proxy connection error: {error}");
+                    error!("socks5 proxy connection(on underlying {id}) error: {error}");
                 })
                 .ok();
         });
