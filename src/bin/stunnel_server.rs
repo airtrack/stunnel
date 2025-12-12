@@ -12,7 +12,6 @@ use stunnel::{
 use tokio::{
     io::{AsyncRead, AsyncWrite, copy_bidirectional},
     net::{TcpStream, UdpSocket},
-    runtime::Runtime,
 };
 
 async fn tlstcp_server(config: Config) -> std::io::Result<()> {
@@ -209,7 +208,8 @@ impl Default for QuicConfig {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let mut args = env::args();
     if args.len() != 2 {
         println!("Usage: {} config.toml", args.nth(0).unwrap());
@@ -225,20 +225,17 @@ fn main() {
 
     let content = String::from_utf8(fs::read(&args.nth(1).unwrap()).unwrap()).unwrap();
     let config: Config = toml::from_str(&content).unwrap();
-    let rt = Runtime::new().unwrap();
 
-    rt.block_on(async move {
-        match config.quic.server_type.as_str() {
-            "s2n-quic" => {
-                let t = tlstcp_server(config.clone());
-                let q = s2n_server(config);
-                futures::try_join!(t, q).ok();
-            }
-            "quic" | _ => {
-                let t = tlstcp_server(config.clone());
-                let q = quinn_server(config);
-                futures::try_join!(t, q).ok();
-            }
+    match config.quic.server_type.as_str() {
+        "s2n-quic" => {
+            let t = tlstcp_server(config.clone());
+            let q = s2n_server(config);
+            futures::try_join!(t, q).ok();
         }
-    });
+        "quic" | _ => {
+            let t = tlstcp_server(config.clone());
+            let q = quinn_server(config);
+            futures::try_join!(t, q).ok();
+        }
+    }
 }

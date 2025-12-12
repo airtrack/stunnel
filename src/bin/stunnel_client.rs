@@ -10,7 +10,6 @@ use stunnel::tunnel::{
 use stunnel::{quic, tlstcp};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, copy_bidirectional};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::runtime::Runtime;
 
 trait State {
     type Id: std::fmt::Display + Send + Copy;
@@ -366,7 +365,8 @@ fn init_log(_config: &Config) {
         .init();
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let mut args = env::args();
     if args.len() != 2 {
         println!("Usage: {} config.toml", args.nth(0).unwrap());
@@ -375,34 +375,31 @@ fn main() {
 
     let content = String::from_utf8(fs::read(&args.nth(1).unwrap()).unwrap()).unwrap();
     let config: Config = toml::from_str(&content).unwrap();
-    let rt = Runtime::new().unwrap();
+
+    let socks5_listener = TcpListener::bind(&config.socks5_listen).await.unwrap();
+    let http_listener = TcpListener::bind(&config.http_listen).await.unwrap();
 
     init_log(&config);
     info!("starting up");
 
-    rt.block_on(async move {
-        let socks5_listener = TcpListener::bind(&config.socks5_listen).await.unwrap();
-        let http_listener = TcpListener::bind(&config.http_listen).await.unwrap();
-
-        match config.tunnel_type.as_str() {
-            "tlstcp" => {
-                tlstcp_client(config, http_listener, socks5_listener)
-                    .await
-                    .ok();
-            }
-            "quic" => {
-                quinn_client(config, http_listener, socks5_listener)
-                    .await
-                    .ok();
-            }
-            "s2n-quic" => {
-                s2n_client(config, http_listener, socks5_listener)
-                    .await
-                    .ok();
-            }
-            _ => {
-                panic!("unknown tunnel_type {}", config.tunnel_type);
-            }
+    match config.tunnel_type.as_str() {
+        "tlstcp" => {
+            tlstcp_client(config, http_listener, socks5_listener)
+                .await
+                .ok();
         }
-    });
+        "quic" => {
+            quinn_client(config, http_listener, socks5_listener)
+                .await
+                .ok();
+        }
+        "s2n-quic" => {
+            s2n_client(config, http_listener, socks5_listener)
+                .await
+                .ok();
+        }
+        _ => {
+            panic!("unknown tunnel_type {}", config.tunnel_type);
+        }
+    }
 }
