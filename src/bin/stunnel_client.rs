@@ -11,6 +11,16 @@ use stunnel::{quic, tlstcp};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, copy_bidirectional};
 use tokio::net::{TcpListener, TcpStream};
 
+trait IoErrorContext<T> {
+    fn context(self, msg: &str) -> std::io::Result<T>;
+}
+
+impl<T> IoErrorContext<T> for std::io::Result<T> {
+    fn context(self, msg: &str) -> std::io::Result<T> {
+        self.map_err(|error| std::io::Error::new(error.kind(), format!("{msg}: {error}")))
+    }
+}
+
 trait State {
     type Id: std::fmt::Display + Send + Copy;
 
@@ -197,18 +207,21 @@ where
     R: AsyncRead + Send + Unpin,
 {
     let incoming = httpproxy::accept(stream).await?;
+    let host = incoming.host().to_string();
 
-    match connect_tcp_tunnel(into, incoming.host()).await {
+    match connect_tcp_tunnel(into, &host).await {
         Ok((_, mut tun)) => {
-            let (mut stream, req) = incoming.response_200().await?;
+            let (mut stream, req) = incoming.response_200().await.context(&host)?;
             if let Some(req) = req {
-                tun.write_all(&req).await?;
+                tun.write_all(&req).await.context(&host)?;
             }
-            copy_bidirectional(&mut stream, &mut tun).await?;
+            copy_bidirectional(&mut stream, &mut tun)
+                .await
+                .context(&host)?;
         }
         Err(error) => {
-            incoming.response_404().await?;
-            return Err(error);
+            incoming.response_404().await.context(&host)?;
+            return Err(error).context(&host);
         }
     }
 
@@ -250,18 +263,20 @@ where
     match socks5::accept(stream).await? {
         AcceptResult::Connect(incoming) => {
             let target = match incoming.destination() {
-                Address::Host(host) => host,
-                Address::Ip(addr) => &addr.to_string(),
+                Address::Host(host) => host.clone(),
+                Address::Ip(addr) => addr.to_string(),
             };
 
             match connect_tcp_tunnel(into, &target).await {
                 Ok((bind, mut tun)) => {
-                    let mut stream = incoming.reply_ok(bind).await?;
-                    copy_bidirectional(&mut stream, &mut tun).await?;
+                    let mut stream = incoming.reply_ok(bind).await.context(&target)?;
+                    copy_bidirectional(&mut stream, &mut tun)
+                        .await
+                        .context(&target)?;
                 }
                 Err(error) => {
-                    incoming.reply_err().await?;
-                    return Err(error);
+                    incoming.reply_err().await.context(&target)?;
+                    return Err(error).context(&target);
                 }
             }
         }
