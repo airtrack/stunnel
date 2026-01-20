@@ -5,7 +5,7 @@ use s2n_quic::{
     provider::{congestion_controller::bbr, limits::Limits, tls},
 };
 
-use crate::quic::Config;
+use crate::quic::{Config, s2n_quic::FixedBandwidthEndpoint};
 
 pub fn new(config: &Config) -> std::io::Result<Server> {
     new_server(config)
@@ -26,15 +26,30 @@ fn new_server(config: &Config) -> Result<Server, Box<dyn Error>> {
         .with_client_authentication()?
         .build()?;
 
-    let bbr = bbr::Builder::default()
-        .with_loss_threshold(config.loss_threshold)
-        .build();
-    let server = Server::builder()
-        .with_tls(tls)?
-        .with_io(config.addr.as_str())?
-        .with_congestion_controller(bbr)?
-        .with_limits(limits)?
-        .start()?;
+    let server = match config.cc.as_str() {
+        "fixed" => {
+            let fixed_bandwidth = FixedBandwidthEndpoint {
+                bandwidth: config.fixed_bandwidth,
+            };
+            Server::builder()
+                .with_tls(tls)?
+                .with_io(config.addr.as_str())?
+                .with_congestion_controller(fixed_bandwidth)?
+                .with_limits(limits)?
+                .start()?
+        }
+        "bbr" | _ => {
+            let bbr = bbr::Builder::default()
+                .with_loss_threshold(config.loss_threshold)
+                .build();
+            Server::builder()
+                .with_tls(tls)?
+                .with_io(config.addr.as_str())?
+                .with_congestion_controller(bbr)?
+                .with_limits(limits)?
+                .start()?
+        }
+    };
 
     Ok(server)
 }

@@ -3,4 +3,4 @@ priv_key = "private_key.pem"
 cert = "stunnel_cert.pem"
 
 # quic config, server_type is "quic" or "s2n-quic"
-# quic = { server_type = "s2n-quic", loss_threshold = 20 }
+# quic = { server_type = "s2n-quic", cc = "bbr|fixed", loss_threshold = 20, fixed_bandwidth = 6000000 }

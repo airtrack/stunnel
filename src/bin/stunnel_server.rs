@@ -44,7 +44,9 @@ async fn quinn_server(config: Config) -> std::io::Result<()> {
         addr: config.listen,
         cert: config.cert,
         priv_key: config.priv_key,
+        cc: config.quic.cc,
         loss_threshold: config.quic.loss_threshold,
+        fixed_bandwidth: config.quic.fixed_bandwidth,
     };
     let endpoint = quic::quinn::server::new(&quic_config).unwrap();
 
@@ -87,7 +89,9 @@ async fn s2n_server(config: Config) -> std::io::Result<()> {
         addr: config.listen,
         cert: config.cert,
         priv_key: config.priv_key,
+        cc: config.quic.cc,
         loss_threshold: config.quic.loss_threshold,
+        fixed_bandwidth: config.quic.fixed_bandwidth,
     };
     let mut endpoint = quic::s2n_quic::server::new(&quic_config).unwrap();
 
@@ -196,14 +200,20 @@ struct Config {
 #[derive(serde::Deserialize, Clone)]
 struct QuicConfig {
     server_type: String,
+    #[serde(default)]
+    cc: String,
     loss_threshold: u32,
+    #[serde(default)]
+    fixed_bandwidth: u32,
 }
 
 impl Default for QuicConfig {
     fn default() -> Self {
         Self {
             server_type: "s2n-quic".to_string(),
+            cc: "bbr".to_string(),
             loss_threshold: 20,
+            fixed_bandwidth: 6 * 1024 * 1024,
         }
     }
 }

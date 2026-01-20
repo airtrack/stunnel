@@ -101,7 +101,9 @@ async fn quinn_client(
         addr: "0.0.0.0:0".to_string(),
         cert: config.server_cert,
         priv_key: config.private_key,
+        cc: config.quic.cc,
         loss_threshold: config.quic.loss_threshold,
+        fixed_bandwidth: config.quic.fixed_bandwidth,
     };
 
     async fn wait_conn_error(conn: &quinn::Connection) -> std::io::Result<()> {
@@ -144,7 +146,9 @@ async fn s2n_client(
         addr: "0.0.0.0:0".to_string(),
         cert: config.server_cert,
         priv_key: config.private_key,
+        cc: config.quic.cc,
         loss_threshold: config.quic.loss_threshold,
+        fixed_bandwidth: config.quic.fixed_bandwidth,
     };
 
     let endpoint = quic::s2n_quic::client::new(&client_config).unwrap();
@@ -346,12 +350,20 @@ struct Config {
 
 #[derive(serde::Deserialize)]
 struct QuicConfig {
+    #[serde(default)]
+    cc: String,
     loss_threshold: u32,
+    #[serde(default)]
+    fixed_bandwidth: u32,
 }
 
 impl Default for QuicConfig {
     fn default() -> Self {
-        Self { loss_threshold: 20 }
+        Self {
+            cc: "bbr".to_string(),
+            loss_threshold: 20,
+            fixed_bandwidth: 6 * 1024 * 1024,
+        }
     }
 }
 
