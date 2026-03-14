@@ -580,7 +580,7 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 [[package]]
 name = "httpproxy"
 version = "0.1.0"
-source = "git+https://github.com/airtrack/sproxy.git?tag=0.1.0#f63fea8f318b64295ee2befdae937e342092c778"
+source = "git+https://github.com/airtrack/sproxy.git?tag=0.1.1#c7a63689f3372a7954c5f34e79dbff6f05dfaea9"
 dependencies = [
  "httparse",
  "log",
@@ -1553,15 +1553,15 @@ dependencies = [
 
 [[package]]
 name = "socks5"
-version = "0.1.0"
-source = "git+https://github.com/airtrack/sproxy.git?tag=0.1.0#f63fea8f318b64295ee2befdae937e342092c778"
+version = "0.1.1"
+source = "git+https://github.com/airtrack/sproxy.git?tag=0.1.1#c7a63689f3372a7954c5f34e79dbff6f05dfaea9"
 dependencies = [
  "tokio",
 ]
 
 [[package]]
 name = "stunnel"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "async-trait",
  "chrono",
