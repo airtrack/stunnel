@@ -1,9 +1,10 @@
-use std::{env, fs};
+use std::fs;
 
+use clap::Parser;
 use log::{error, info};
 use quinn::Connection;
 use stunnel::{
-    quic, tlstcp,
+    print_version, quic, tlstcp,
     tunnel::{
         AsyncReadDatagramExt, AsyncWriteDatagramExt, Tunnel,
         server::{Incoming, accept},
@@ -187,6 +188,21 @@ where
     futures::try_join!(r(socket, &mut send), w(socket, &mut recv)).map(|_| (0, 0))
 }
 
+#[derive(Parser)]
+#[command(disable_version_flag = true)]
+struct Args {
+    #[arg(long, help = "Print version and build information")]
+    version: bool,
+
+    #[arg(
+        long,
+        value_name = "FILE",
+        required_unless_present = "version",
+        help = "Path to the server config file"
+    )]
+    config: Option<String>,
+}
+
 #[derive(serde::Deserialize, Clone)]
 struct Config {
     listen: String,
@@ -220,9 +236,9 @@ impl Default for QuicConfig {
 
 #[tokio::main]
 async fn main() {
-    let mut args = env::args();
-    if args.len() != 2 {
-        println!("Usage: {} config.toml", args.nth(0).unwrap());
+    let args = Args::parse();
+    if args.version {
+        print_version("stunnel_server");
         return;
     }
 
@@ -233,7 +249,8 @@ async fn main() {
         .init();
     info!("starting up");
 
-    let content = String::from_utf8(fs::read(&args.nth(1).unwrap()).unwrap()).unwrap();
+    let config = args.config.unwrap();
+    let content = String::from_utf8(fs::read(config).unwrap()).unwrap();
     let config: Config = toml::from_str(&content).unwrap();
 
     match config.quic.server_type.as_str() {

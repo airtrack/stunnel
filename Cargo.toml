@@ -3,11 +3,13 @@ name = "stunnel"
 version = "2.3.0"
 authors = ["airtrack <airtrack.sk@gmail.com>"]
 edition = "2024"
+build = "build.rs"
 
 [dependencies]
 socks5 = { git = "https://github.com/airtrack/sproxy.git", tag = "0.1.1" }
 httpproxy = { git = "https://github.com/airtrack/sproxy.git", tag = "0.1.1" }
 chrono = "0.4"
+clap = { version = "4.5.60", features = ["derive"] }
 log = "0.4"
 env_logger = "0.11"
 futures = "0.3"
@@ -22,6 +24,10 @@ toml = "0.8.8"
 tokio-rustls = "0.26"
 s2n-quic = { version = "1.72.0", features = ["unstable-congestion-controller"] }
 s2n-quic-core = { version = "0.72.0", features = ["unstable-congestion-controller"] }
+shadow-rs = { version = "2.0.0", default-features = false }
+
+[build-dependencies]
+shadow-rs = "2.0.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 oslog = "*"

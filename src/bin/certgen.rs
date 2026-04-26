@@ -1,8 +1,23 @@
 use std::{fs::File, io::Write};
 
+use clap::Parser;
 use rcgen::{CertifiedKey, generate_simple_self_signed};
+use stunnel::print_version;
+
+#[derive(Parser)]
+#[command(disable_version_flag = true)]
+struct Args {
+    #[arg(long, help = "Print version and build information")]
+    version: bool,
+}
 
 fn main() {
+    let args = Args::parse();
+    if args.version {
+        print_version("certgen");
+        return;
+    }
+
     let subject_alt_names = vec!["stunnel".to_string()];
     let CertifiedKey { cert, key_pair } = generate_simple_self_signed(subject_alt_names).unwrap();
 
