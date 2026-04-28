@@ -22,57 +22,6 @@ impl<T> IoErrorContext<T> for std::io::Result<T> {
     }
 }
 
-trait State {
-    type Id: std::fmt::Display + Send + Copy;
-
-    fn underlying_id(&self) -> Self::Id;
-    fn in_good_condition(&mut self) -> std::io::Result<()>;
-}
-
-impl State for tlstcp::Connector {
-    type Id = &'static str;
-
-    fn underlying_id(&self) -> Self::Id {
-        "tlstcp"
-    }
-
-    fn in_good_condition(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl State for quinn::Connection {
-    type Id = usize;
-
-    fn underlying_id(&self) -> Self::Id {
-        self.stable_id()
-    }
-
-    fn in_good_condition(&mut self) -> std::io::Result<()> {
-        if let Some(error) = self.close_reason() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::ConnectionReset,
-                error,
-            ));
-        }
-
-        Ok(())
-    }
-}
-
-impl State for s2n_quic::connection::Handle {
-    type Id = u64;
-
-    fn underlying_id(&self) -> Self::Id {
-        self.id()
-    }
-
-    fn in_good_condition(&mut self) -> std::io::Result<()> {
-        self.keep_alive(true)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::ConnectionReset, error))
-    }
-}
-
 async fn tlstcp_client(
     config: Config,
     http_listener: TcpListener,
@@ -86,8 +35,8 @@ async fn tlstcp_client(
     };
 
     let connector = tlstcp::client::new(&tlstcp_config);
-    let h = accept_http_tunnels(&http_listener, &connector);
-    let s = accept_socks5_tunnels(&socks5_listener, &connector);
+    let h = accept_http_tunnels(&http_listener, &connector, "tlstcp");
+    let s = accept_socks5_tunnels(&socks5_listener, &connector, "tlstcp");
 
     futures::try_join!(h, s).map(|_| ())
 }
@@ -120,8 +69,8 @@ async fn quinn_client(
 
         match conn.await {
             Ok(conn) => {
-                let h = accept_http_tunnels(&http_listener, &conn);
-                let s = accept_socks5_tunnels(&socks5_listener, &conn);
+                let h = accept_http_tunnels(&http_listener, &conn, conn.stable_id());
+                let s = accept_socks5_tunnels(&socks5_listener, &conn, conn.stable_id());
                 let w = wait_conn_error(&conn);
 
                 futures::try_join!(h, s, w)
@@ -154,6 +103,22 @@ async fn s2n_client(
 
     let endpoint = quic::s2n_quic::client::new(&client_config).unwrap();
 
+    async fn wait_conn_error(
+        mut acceptor: s2n_quic::connection::StreamAcceptor,
+    ) -> std::io::Result<()> {
+        loop {
+            match acceptor.accept().await {
+                Ok(None) | Err(_) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionReset,
+                        "connection closed",
+                    ));
+                }
+                Ok(Some(_)) => {}
+            }
+        }
+    }
+
     loop {
         let connect =
             s2n_quic::client::Connect::new(addr).with_server_name(config.server_name.clone());
@@ -161,13 +126,14 @@ async fn s2n_client(
         match endpoint.connect(connect).await {
             Ok(mut conn) => {
                 if conn.keep_alive(true).is_ok() {
-                    let conn = conn.handle();
-                    let h = accept_http_tunnels(&http_listener, &conn);
-                    let s = accept_socks5_tunnels(&socks5_listener, &conn);
+                    let (handle, acceptor) = conn.split();
+                    let h = accept_http_tunnels(&http_listener, &handle, handle.id());
+                    let s = accept_socks5_tunnels(&socks5_listener, &handle, handle.id());
+                    let w = wait_conn_error(acceptor);
 
-                    futures::try_join!(h, s)
+                    futures::try_join!(h, s, w)
                         .inspect_err(|error| {
-                            error!("quic connection {} broken: {error}", conn.id());
+                            error!("quic connection {} broken: {error}", handle.id());
                         })
                         .ok();
                 }
@@ -179,26 +145,26 @@ async fn s2n_client(
     }
 }
 
-async fn accept_http_tunnels<I, S, R>(listener: &TcpListener, into: &I) -> std::io::Result<()>
+async fn accept_http_tunnels<I, S, R, T>(
+    listener: &TcpListener,
+    into: &I,
+    id: T,
+) -> std::io::Result<()>
 where
-    I: IntoTunnel<S, R> + State + Clone + Send + 'static,
+    I: IntoTunnel<S, R> + Clone + Send + 'static,
     S: AsyncWrite + Send + Unpin,
     R: AsyncRead + Send + Unpin,
+    T: std::fmt::Display + Clone + Send + Copy + 'static,
 {
-    let mut into = into.clone();
-    let id = into.underlying_id();
-
     loop {
         let (stream, _) = listener.accept().await?;
-
-        into.in_good_condition()?;
         let into = into.clone();
 
         tokio::spawn(async move {
             run_http_tunnel(stream, into)
                 .await
                 .inspect_err(|error| {
-                    error!("http proxy connection(on underlying {id}) error: {error}");
+                    error!("http proxy connection(over {id}) error: {error}");
                 })
                 .ok();
         });
@@ -207,7 +173,7 @@ where
 
 async fn run_http_tunnel<I, S, R>(stream: TcpStream, into: I) -> std::io::Result<()>
 where
-    I: IntoTunnel<S, R> + State + Clone + Send + 'static,
+    I: IntoTunnel<S, R> + Clone + Send + 'static,
     S: AsyncWrite + Send + Unpin,
     R: AsyncRead + Send + Unpin,
 {
@@ -233,26 +199,26 @@ where
     Ok(())
 }
 
-async fn accept_socks5_tunnels<I, S, R>(listener: &TcpListener, into: &I) -> std::io::Result<()>
+async fn accept_socks5_tunnels<I, S, R, T>(
+    listener: &TcpListener,
+    into: &I,
+    id: T,
+) -> std::io::Result<()>
 where
-    I: IntoTunnel<S, R> + State + Clone + Send + 'static,
+    I: IntoTunnel<S, R> + Clone + Send + 'static,
     S: AsyncWrite + Send + Unpin,
     R: AsyncRead + Send + Unpin,
+    T: std::fmt::Display + Clone + Send + Copy + 'static,
 {
-    let mut into = into.clone();
-    let id = into.underlying_id();
-
     loop {
         let (stream, _) = listener.accept().await?;
-
-        into.in_good_condition()?;
         let into = into.clone();
 
         tokio::spawn(async move {
             run_socks5_tunnel(stream, into)
                 .await
                 .inspect_err(|error| {
-                    error!("socks5 proxy connection(on underlying {id}) error: {error}");
+                    error!("socks5 proxy connection(over {id}) error: {error}");
                 })
                 .ok();
         });
@@ -261,7 +227,7 @@ where
 
 async fn run_socks5_tunnel<I, S, R>(stream: TcpStream, into: I) -> std::io::Result<()>
 where
-    I: IntoTunnel<S, R> + State + Clone + Send + 'static,
+    I: IntoTunnel<S, R> + Clone + Send + 'static,
     S: AsyncWrite + Send + Unpin,
     R: AsyncRead + Send + Unpin,
 {
