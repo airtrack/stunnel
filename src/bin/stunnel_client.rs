@@ -1,5 +1,9 @@
-use std::fs;
-use std::net::SocketAddr;
+use std::{
+    fs,
+    net::SocketAddr,
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    time::Instant,
+};
 
 use clap::Parser;
 use log::{error, info};
@@ -12,6 +16,10 @@ use stunnel::{print_version, quic, tlstcp};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, copy_bidirectional};
 use tokio::net::{TcpListener, TcpStream};
 
+static NEXT_TUNNEL_ID: AtomicU64 = AtomicU64::new(1);
+static ACTIVE_HTTP_TUNNELS: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE_SOCKS5_TUNNELS: AtomicUsize = AtomicUsize::new(0);
+
 trait IoErrorContext<T> {
     fn context(self, msg: &str) -> std::io::Result<T>;
 }
@@ -19,6 +27,46 @@ trait IoErrorContext<T> {
 impl<T> IoErrorContext<T> for std::io::Result<T> {
     fn context(self, msg: &str) -> std::io::Result<T> {
         self.map_err(|error| std::io::Error::new(error.kind(), format!("{msg}: {error}")))
+    }
+}
+
+struct ActiveTunnelGuard {
+    kind: &'static str,
+    id: u64,
+    active: &'static AtomicUsize,
+    start: Instant,
+}
+
+impl ActiveTunnelGuard {
+    fn new(kind: &'static str, active: &'static AtomicUsize) -> Self {
+        let id = NEXT_TUNNEL_ID.fetch_add(1, Ordering::Relaxed);
+        let active_count = active.fetch_add(1, Ordering::AcqRel) + 1;
+
+        info!("{kind} proxy task started: tunnel={id} active={active_count}");
+
+        Self {
+            kind,
+            id,
+            active,
+            start: Instant::now(),
+        }
+    }
+
+    fn id(&self) -> u64 {
+        self.id
+    }
+}
+
+impl Drop for ActiveTunnelGuard {
+    fn drop(&mut self) {
+        let active_count = self.active.fetch_sub(1, Ordering::AcqRel) - 1;
+        info!(
+            "{} proxy task finished: tunnel={} elapsed={:?} active={}",
+            self.kind,
+            self.id,
+            self.start.elapsed(),
+            active_count
+        );
     }
 }
 
@@ -164,23 +212,31 @@ where
     let into = into.clone();
 
     loop {
-        let (stream, _) = listener.accept().await?;
+        let (stream, peer_addr) = listener.accept().await?;
+        let guard = ActiveTunnelGuard::new("http", &ACTIVE_HTTP_TUNNELS);
 
         let id = id;
         let into = into.clone();
+        let tunnel_id = guard.id();
+
+        info!("http proxy accepted: tunnel={tunnel_id} underlying={id} peer={peer_addr}");
 
         tokio::spawn(async move {
-            run_http_tunnel(stream, into)
+            let _guard = guard;
+
+            run_http_tunnel(stream, into, tunnel_id)
                 .await
                 .inspect_err(|error| {
-                    error!("http proxy connection(on underlying {id}) error: {error}");
+                    error!(
+                        "http proxy connection(on underlying {id}, tunnel {tunnel_id}) error: {error}"
+                    );
                 })
                 .ok();
         });
     }
 }
 
-async fn run_http_tunnel<I, S, R>(stream: TcpStream, into: I) -> std::io::Result<()>
+async fn run_http_tunnel<I, S, R>(stream: TcpStream, into: I, tunnel_id: u64) -> std::io::Result<()>
 where
     I: IntoTunnel<S, R> + Clone + Send + 'static,
     S: AsyncWrite + Send + Unpin,
@@ -189,15 +245,27 @@ where
     let incoming = httpproxy::accept(stream).await?;
     let host = incoming.host().to_string();
 
+    info!("http proxy request: tunnel={tunnel_id} target={host}");
+
     match connect_tcp_tunnel(into, &host).await {
         Ok((_, mut tun)) => {
+            info!("http tunnel connected: tunnel={tunnel_id} target={host}");
             let (mut stream, req) = incoming.response_200().await.context(&host)?;
             if let Some(req) = req {
                 tun.write_all(&req).await.context(&host)?;
             }
-            copy_bidirectional(&mut stream, &mut tun)
+
+            info!("http tunnel copy started: tunnel={tunnel_id} target={host}");
+            let start = Instant::now();
+            let (from_client, from_tunnel) = copy_bidirectional(&mut stream, &mut tun)
                 .await
                 .context(&host)?;
+            info!(
+                "http tunnel copy finished: tunnel={tunnel_id} target={host} elapsed={:?} from_client={} from_tunnel={}",
+                start.elapsed(),
+                from_client,
+                from_tunnel
+            );
         }
         Err(error) => {
             incoming.response_404().await.context(&host)?;
@@ -222,23 +290,35 @@ where
     let into = into.clone();
 
     loop {
-        let (stream, _) = listener.accept().await?;
+        let (stream, peer_addr) = listener.accept().await?;
+        let guard = ActiveTunnelGuard::new("socks5", &ACTIVE_SOCKS5_TUNNELS);
 
         let id = id;
         let into = into.clone();
+        let tunnel_id = guard.id();
+
+        info!("socks5 proxy accepted: tunnel={tunnel_id} underlying={id} peer={peer_addr}");
 
         tokio::spawn(async move {
-            run_socks5_tunnel(stream, into)
+            let _guard = guard;
+
+            run_socks5_tunnel(stream, into, tunnel_id)
                 .await
                 .inspect_err(|error| {
-                    error!("socks5 proxy connection(on underlying {id}) error: {error}");
+                    error!(
+                        "socks5 proxy connection(on underlying {id}, tunnel {tunnel_id}) error: {error}"
+                    );
                 })
                 .ok();
         });
     }
 }
 
-async fn run_socks5_tunnel<I, S, R>(stream: TcpStream, into: I) -> std::io::Result<()>
+async fn run_socks5_tunnel<I, S, R>(
+    stream: TcpStream,
+    into: I,
+    tunnel_id: u64,
+) -> std::io::Result<()>
 where
     I: IntoTunnel<S, R> + Clone + Send + 'static,
     S: AsyncWrite + Send + Unpin,
@@ -251,12 +331,26 @@ where
                 Address::Ip(addr) => addr.to_string(),
             };
 
+            info!("socks5 connect request: tunnel={tunnel_id} target={target}");
+
             match connect_tcp_tunnel(into, &target).await {
                 Ok((bind, mut tun)) => {
+                    info!(
+                        "socks5 tunnel connected: tunnel={tunnel_id} target={target} bind={bind}"
+                    );
                     let mut stream = incoming.reply_ok(bind).await.context(&target)?;
-                    copy_bidirectional(&mut stream, &mut tun)
+
+                    info!("socks5 tunnel copy started: tunnel={tunnel_id} target={target}");
+                    let start = Instant::now();
+                    let (from_client, from_tunnel) = copy_bidirectional(&mut stream, &mut tun)
                         .await
                         .context(&target)?;
+                    info!(
+                        "socks5 tunnel copy finished: tunnel={tunnel_id} target={target} elapsed={:?} from_client={} from_tunnel={}",
+                        start.elapsed(),
+                        from_client,
+                        from_tunnel
+                    );
                 }
                 Err(error) => {
                     incoming.reply_err().await.context(&target)?;
@@ -267,6 +361,8 @@ where
         AcceptResult::UdpAssociate(incoming) => {
             let mut buf = UdpSocketBuf::new();
             let (socket, holder, dst) = incoming.recv_wait(&mut buf).await?;
+
+            info!("socks5 udp associate request: tunnel={tunnel_id} first_dst={dst}");
 
             let tun = connect_udp_tunnel(into).await?;
             let (send, recv) = tun.split();
@@ -303,7 +399,9 @@ where
                 holder.wait().await
             }
 
+            info!("socks5 udp tunnel copy started: tunnel={tunnel_id} first_dst={dst}");
             futures::try_join!(s(&socket, send, buf, dst), r(&socket, recv), h(holder))?;
+            info!("socks5 udp tunnel copy finished: tunnel={tunnel_id} first_dst={dst}");
         }
     }
 

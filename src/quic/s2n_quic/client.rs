@@ -5,7 +5,10 @@ use s2n_quic::{
     provider::{congestion_controller::bbr, limits::Limits, tls},
 };
 
-use crate::quic::{Config, s2n_quic::FixedBandwidthEndpoint};
+use crate::quic::{
+    Config,
+    s2n_quic::{FixedBandwidthEndpoint, S2nEventLogger},
+};
 
 pub fn new(config: &Config) -> std::io::Result<Client> {
     new_client(config)
@@ -34,6 +37,7 @@ fn new_client(config: &Config) -> Result<Client, Box<dyn Error>> {
                 .with_tls(tls)?
                 .with_io(config.addr.as_str())?
                 .with_congestion_controller(fixed_bandwidth)?
+                .with_event(S2nEventLogger::new("client"))?
                 .with_limits(limits)?
                 .start()?
         }
@@ -45,6 +49,7 @@ fn new_client(config: &Config) -> Result<Client, Box<dyn Error>> {
                 .with_tls(tls)?
                 .with_io(config.addr.as_str())?
                 .with_congestion_controller(bbr)?
+                .with_event(S2nEventLogger::new("client"))?
                 .with_limits(limits)?
                 .start()?
         }

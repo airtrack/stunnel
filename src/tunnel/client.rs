@@ -1,10 +1,13 @@
-use std::net::SocketAddr;
+use std::{future::Future, net::SocketAddr, time::Duration};
 
 use async_trait::async_trait;
+use log::{info, warn};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::tlstcp::{self, TlsReadStream, TlsWriteStream};
 use crate::tunnel::Tunnel;
+
+const TUNNEL_STAGE_WARN: Duration = Duration::from_secs(3);
 
 #[async_trait]
 pub trait IntoTunnel<S, R> {
@@ -27,7 +30,18 @@ impl IntoTunnel<s2n_quic::stream::SendStream, s2n_quic::stream::ReceiveStream>
         mut self,
     ) -> std::io::Result<Tunnel<s2n_quic::stream::SendStream, s2n_quic::stream::ReceiveStream>>
     {
-        let stream = self.open_bidirectional_stream().await?;
+        let conn_id = self.id();
+        info!("s2n-quic client opening bidirectional stream: conn={conn_id}");
+        let stream = self
+            .open_bidirectional_stream()
+            .await
+            .inspect_err(|error| {
+                warn!(
+                    "s2n-quic client open bidirectional stream failed: conn={conn_id} error={error}"
+                );
+            })?;
+        let stream_id = stream.id();
+        info!("s2n-quic client bidirectional stream opened: conn={conn_id} stream={stream_id}");
         let (recv, send) = stream.split();
         Ok(Tunnel { s: send, r: recv })
     }
@@ -53,16 +67,22 @@ where
     S: AsyncWrite + Send + Unpin,
     R: AsyncRead + Send + Unpin,
 {
-    let mut conn = into.into_tunnel().await?;
+    let mut conn = tunnel_stage(target, "open tunnel stream", into.into_tunnel()).await?;
 
-    conn.write_u8(target.len() as u8).await?;
-    conn.write_all(target.as_bytes()).await?;
+    tunnel_stage(target, "write tunnel target", async {
+        conn.write_u8(target.len() as u8).await?;
+        conn.write_all(target.as_bytes()).await
+    })
+    .await?;
 
-    let n = conn.read_u8().await? as usize;
+    let n = tunnel_stage(target, "read tunnel response length", conn.read_u8()).await? as usize;
     let mut buf = vec![0u8; n];
-    conn.read_exact(&mut buf)
-        .await
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+    tunnel_stage(target, "read tunnel response", async {
+        conn.read_exact(&mut buf)
+            .await
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))
+    })
+    .await?;
 
     if let Some(bind) = std::str::from_utf8(&buf)
         .ok()
@@ -82,15 +102,68 @@ where
     S: AsyncWrite + Send + Unpin,
     R: AsyncRead + Send + Unpin,
 {
-    let mut conn = into.into_tunnel().await?;
+    let mut conn = tunnel_stage("udp", "open tunnel stream", into.into_tunnel()).await?;
 
-    conn.write_u8(0).await?;
+    tunnel_stage("udp", "write tunnel type", conn.write_u8(0)).await?;
 
-    let n = conn.read_u8().await? as usize;
+    let n = tunnel_stage("udp", "read tunnel response length", conn.read_u8()).await? as usize;
     let mut buf = vec![0u8; n];
-    conn.read_exact(&mut buf)
-        .await
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+    tunnel_stage("udp", "read tunnel response", async {
+        conn.read_exact(&mut buf)
+            .await
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))
+    })
+    .await?;
 
     Ok(conn)
+}
+
+async fn tunnel_stage<T, F>(target: &str, stage: &'static str, future: F) -> std::io::Result<T>
+where
+    F: Future<Output = std::io::Result<T>>,
+{
+    let start = std::time::Instant::now();
+    let mut warned = false;
+    tokio::pin!(future);
+
+    loop {
+        if warned {
+            let result = future.await;
+            log_tunnel_stage_result(target, stage, start.elapsed(), &result);
+            return result;
+        }
+
+        tokio::select! {
+            result = &mut future => {
+                log_tunnel_stage_result(target, stage, start.elapsed(), &result);
+                return result;
+            }
+            _ = tokio::time::sleep(TUNNEL_STAGE_WARN) => {
+                warned = true;
+                warn!(
+                    "tunnel setup waiting: target={target} stage=\"{stage}\" elapsed={:?}",
+                    start.elapsed()
+                );
+            }
+        }
+    }
+}
+
+fn log_tunnel_stage_result<T>(
+    target: &str,
+    stage: &'static str,
+    elapsed: Duration,
+    result: &std::io::Result<T>,
+) {
+    match result {
+        Ok(_) if elapsed >= TUNNEL_STAGE_WARN => {
+            warn!("tunnel setup resumed: target={target} stage=\"{stage}\" elapsed={elapsed:?}");
+        }
+        Err(error) => {
+            warn!(
+                "tunnel setup failed: target={target} stage=\"{stage}\" elapsed={elapsed:?} error={error}"
+            );
+        }
+        Ok(_) => {}
+    }
 }

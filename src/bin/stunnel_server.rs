@@ -1,7 +1,11 @@
-use std::fs;
+use std::{
+    fs,
+    future::Future,
+    time::{Duration, Instant},
+};
 
 use clap::Parser;
-use log::{error, info};
+use log::{error, info, warn};
 use quinn::Connection;
 use stunnel::{
     print_version, quic, tlstcp,
@@ -14,6 +18,8 @@ use tokio::{
     io::{AsyncRead, AsyncWrite, copy_bidirectional},
     net::{TcpStream, UdpSocket},
 };
+
+const TUNNEL_STAGE_WARN: Duration = Duration::from_secs(3);
 
 async fn tlstcp_server(config: Config) -> std::io::Result<()> {
     let tlstcp_config = tlstcp::server::Config {
@@ -114,6 +120,8 @@ async fn s2n_server(config: Config) -> std::io::Result<()> {
 }
 
 async fn handle_s2n_conn(mut conn: s2n_quic::Connection) -> std::io::Result<()> {
+    let conn_id = conn.id();
+
     loop {
         let stream = conn
             .accept_bidirectional_stream()
@@ -122,6 +130,8 @@ async fn handle_s2n_conn(mut conn: s2n_quic::Connection) -> std::io::Result<()> 
                 std::io::ErrorKind::ConnectionAborted,
                 "conn closed",
             ))?;
+        let stream_id = stream.id();
+        info!("s2n-quic server bidirectional stream accepted: conn={conn_id} stream={stream_id}");
         let (mut recv, mut send) = stream.split();
 
         tokio::spawn(async move {
@@ -140,17 +150,86 @@ where
     S: AsyncWrite + Send + Unpin,
     R: AsyncRead + Send + Unpin,
 {
-    match accept(send, recv).await? {
+    match server_tunnel_stage("-", "read tunnel request", accept(send, recv)).await? {
         Incoming::UdpTunnel(mut tun) => {
             let socket = UdpSocket::bind("0.0.0.0:0").await?;
-            tun.response(socket.local_addr()?).await?;
+            server_tunnel_stage(
+                "udp",
+                "send tunnel response",
+                tun.response(socket.local_addr()?),
+            )
+            .await?;
             copy_bidirectional_udp_socket(tun, &socket).await
         }
         Incoming::TcpTunnel((mut tun, destination)) => {
-            let mut stream = TcpStream::connect(destination).await?;
-            tun.response(stream.local_addr()?).await?;
+            let mut stream = server_tunnel_stage(
+                &destination,
+                "connect target",
+                TcpStream::connect(&destination),
+            )
+            .await?;
+            server_tunnel_stage(
+                &destination,
+                "send tunnel response",
+                tun.response(stream.local_addr()?),
+            )
+            .await?;
             copy_bidirectional(&mut tun, &mut stream).await
         }
+    }
+}
+
+async fn server_tunnel_stage<T, F>(
+    target: &str,
+    stage: &'static str,
+    future: F,
+) -> std::io::Result<T>
+where
+    F: Future<Output = std::io::Result<T>>,
+{
+    let start = Instant::now();
+    let mut warned = false;
+    tokio::pin!(future);
+
+    loop {
+        if warned {
+            let result = future.await;
+            log_server_tunnel_stage_result(target, stage, start.elapsed(), &result);
+            return result;
+        }
+
+        tokio::select! {
+            result = &mut future => {
+                log_server_tunnel_stage_result(target, stage, start.elapsed(), &result);
+                return result;
+            }
+            _ = tokio::time::sleep(TUNNEL_STAGE_WARN) => {
+                warned = true;
+                warn!(
+                    "server tunnel waiting: target={target} stage=\"{stage}\" elapsed={:?}",
+                    start.elapsed()
+                );
+            }
+        }
+    }
+}
+
+fn log_server_tunnel_stage_result<T>(
+    target: &str,
+    stage: &'static str,
+    elapsed: Duration,
+    result: &std::io::Result<T>,
+) {
+    match result {
+        Ok(_) if elapsed >= TUNNEL_STAGE_WARN => {
+            warn!("server tunnel resumed: target={target} stage=\"{stage}\" elapsed={elapsed:?}");
+        }
+        Err(error) => {
+            warn!(
+                "server tunnel failed: target={target} stage=\"{stage}\" elapsed={elapsed:?} error={error}"
+            );
+        }
+        Ok(_) => {}
     }
 }
 
