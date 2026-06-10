@@ -8,7 +8,7 @@ private_key = "private_key.pem"
 # tlstcp or quic or s2n-quic
 tunnel_type = "tlstcp"
 
-# quic config for s2n-quic
+# quic config
 # quic = { cc = "bbr|fixed", loss_threshold = 20, fixed_bandwidth = 6000000 }
 
 # logging to the ULS on macOS

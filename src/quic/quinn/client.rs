@@ -1,11 +1,11 @@
 use std::{sync::Arc, time::Duration};
 
-use quinn::{
-    ClientConfig, Endpoint, TransportConfig, congestion, crypto::rustls::QuicClientConfig,
-};
+use quinn::{ClientConfig, Endpoint, TransportConfig, crypto::rustls::QuicClientConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 
 use crate::quic::Config;
+
+use super::cc_factory;
 
 pub fn new(config: &Config) -> std::io::Result<Endpoint> {
     let cert = CertificateDer::from_pem_file(&config.cert).unwrap();
@@ -31,7 +31,7 @@ pub fn new(config: &Config) -> std::io::Result<Endpoint> {
     transport
         .max_concurrent_bidi_streams(10000u32.into())
         .keep_alive_interval(Some(Duration::from_secs(3)))
-        .congestion_controller_factory(Arc::new(congestion::BbrConfig::default()));
+        .congestion_controller_factory(cc_factory(config));
 
     client_config.transport_config(Arc::new(transport));
 

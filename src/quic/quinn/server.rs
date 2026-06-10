@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
-use quinn::{Endpoint, ServerConfig, congestion, crypto::rustls::QuicServerConfig};
+use quinn::{Endpoint, ServerConfig, crypto::rustls::QuicServerConfig};
 use rustls::{
     pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
     server::WebPkiClientVerifier,
 };
 
 use crate::quic::Config;
+
+use super::cc_factory;
 
 pub fn new(config: &Config) -> std::io::Result<Endpoint> {
     let cert = CertificateDer::from_pem_file(&config.cert).unwrap();
@@ -36,7 +38,7 @@ pub fn new(config: &Config) -> std::io::Result<Endpoint> {
     let transport = Arc::get_mut(&mut server_config.transport).unwrap();
     transport
         .max_concurrent_bidi_streams(10000u32.into())
-        .congestion_controller_factory(Arc::new(congestion::BbrConfig::default()));
+        .congestion_controller_factory(cc_factory(config));
 
     let addr = config.addr.parse().unwrap();
     Endpoint::server(server_config, addr)
