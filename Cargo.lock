@@ -62,7 +62,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -73,7 +73,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -415,7 +415,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -872,7 +872,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1546,7 +1546,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1575,9 +1575,8 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "s2n-codec"
-version = "0.78.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22bacdd8e47b929c10802a93070890d26b8c0e510857113b8f098fca002aecf4"
+version = "0.80.0"
+source = "git+https://github.com/airtrack/s2n-quic.git?branch=flow-control-window-leak#e810496827c8cf54b3d10e833d9e2cc35b78d9c7"
 dependencies = [
  "byteorder",
  "bytes",
@@ -1586,9 +1585,8 @@ dependencies = [
 
 [[package]]
 name = "s2n-quic"
-version = "1.78.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82c23e80ef5205e7f197f6fb0922f3f66eb6599fd826cbf5eb0dc0edba17aee5"
+version = "1.80.0"
+source = "git+https://github.com/airtrack/s2n-quic.git?branch=flow-control-window-leak#e810496827c8cf54b3d10e833d9e2cc35b78d9c7"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -1609,9 +1607,8 @@ dependencies = [
 
 [[package]]
 name = "s2n-quic-core"
-version = "0.78.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b0d2cd0e789568ac5c374ea7fbf599e1a9d63362bd37baf2d45d386f5f3d25f"
+version = "0.80.0"
+source = "git+https://github.com/airtrack/s2n-quic.git?branch=flow-control-window-leak#e810496827c8cf54b3d10e833d9e2cc35b78d9c7"
 dependencies = [
  "atomic-waker",
  "byteorder",
@@ -1630,9 +1627,8 @@ dependencies = [
 
 [[package]]
 name = "s2n-quic-crypto"
-version = "0.78.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0b6fdfaca6213006dc5163ad8788010f6b5861e6e41352b0a3b00e0fc0930d4"
+version = "0.80.0"
+source = "git+https://github.com/airtrack/s2n-quic.git?branch=flow-control-window-leak#e810496827c8cf54b3d10e833d9e2cc35b78d9c7"
 dependencies = [
  "aws-lc-rs",
  "cfg-if",
@@ -1644,9 +1640,8 @@ dependencies = [
 
 [[package]]
 name = "s2n-quic-platform"
-version = "0.78.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c4742176bbbc522d78e415dfdd3fba84b09ce4744bce20b2f7a6e8ff0c62a3a"
+version = "0.80.0"
+source = "git+https://github.com/airtrack/s2n-quic.git?branch=flow-control-window-leak#e810496827c8cf54b3d10e833d9e2cc35b78d9c7"
 dependencies = [
  "cfg-if",
  "futures",
@@ -1659,9 +1654,8 @@ dependencies = [
 
 [[package]]
 name = "s2n-quic-rustls"
-version = "0.78.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "201a367dbdadc85c9e1fda1be03205740bf2cc848f9436189f88d9b7f3807554"
+version = "0.80.0"
+source = "git+https://github.com/airtrack/s2n-quic.git?branch=flow-control-window-leak#e810496827c8cf54b3d10e833d9e2cc35b78d9c7"
 dependencies = [
  "bytes",
  "rustls",
@@ -1673,9 +1667,8 @@ dependencies = [
 
 [[package]]
 name = "s2n-quic-tls"
-version = "0.78.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5368d27604ea26aab1dac1df1a84b676a519e139d7927d9afbd6a8137c9129b7"
+version = "0.80.0"
+source = "git+https://github.com/airtrack/s2n-quic.git?branch=flow-control-window-leak#e810496827c8cf54b3d10e833d9e2cc35b78d9c7"
 dependencies = [
  "bytes",
  "errno",
@@ -1688,9 +1681,8 @@ dependencies = [
 
 [[package]]
 name = "s2n-quic-tls-default"
-version = "0.78.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e710c8e03558c1eaca90356f34821f6d3b01bf4bf9cc439935cb3002eab2e1d4"
+version = "0.80.0"
+source = "git+https://github.com/airtrack/s2n-quic.git?branch=flow-control-window-leak#e810496827c8cf54b3d10e833d9e2cc35b78d9c7"
 dependencies = [
  "s2n-quic-rustls",
  "s2n-quic-tls",
@@ -1698,9 +1690,8 @@ dependencies = [
 
 [[package]]
 name = "s2n-quic-transport"
-version = "0.78.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08db5b4830452c1fff9c9fa93a3fa030c1d7d38a9fc96815e0df98e407fae612"
+version = "0.80.0"
+source = "git+https://github.com/airtrack/s2n-quic.git?branch=flow-control-window-leak#e810496827c8cf54b3d10e833d9e2cc35b78d9c7"
 dependencies = [
  "bytes",
  "futures-channel",
@@ -1896,7 +1887,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2354,7 +2345,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
