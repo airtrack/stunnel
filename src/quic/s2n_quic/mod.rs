@@ -2,6 +2,7 @@ use s2n_quic::provider::congestion_controller::{CongestionController, Endpoint};
 
 pub mod client;
 pub mod server;
+mod transport;
 
 #[derive(Clone, Copy, Debug)]
 struct FixedBandwidth {

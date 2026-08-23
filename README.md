@@ -39,6 +39,24 @@ Simple SOCKS5/HTTP tunnel. SOCKS5 on client side provides NO AUTHENTICATION TCP/
 
 Browser connect client address(`127.0.0.1:1080`) via SOCKS5 or connect client address(`127.0.0.1:8080`) via HTTP.
 
+## Reverse proxy(`quic`/`s2n-quic`)
+
+The client can register reverse TCP listeners on the server: the server listens
+on the configured address, and every connection is forwarded through the tunnel
+back to the client, which connects to the local `target`.
+
+```toml
+# client.toml
+reverse_proxy = [
+    { listen = "0.0.0.0:8081", target = "127.0.0.1:3000" },
+    { listen = "0.0.0.0:8082", target = "127.0.0.1:22" },
+]
+```
+
+Multiple entries are supported. The client registers the listeners on the
+server when the tunnel connects and re-registers after reconnects. The server
+opens streams on the same QUIC connection.
+
 ## Work with autoproxy and gatewaysocks
 
 * [autoproxy](https://github.com/airtrack/autoproxy)

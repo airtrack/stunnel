@@ -53,12 +53,13 @@ pub async fn new(config: &Config) -> Acceptor {
             .build()
             .unwrap();
 
-    let server_config = rustls::ServerConfig::builder_with_provider(provider)
+    let mut server_config = rustls::ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .unwrap()
         .with_client_cert_verifier(client_verifier)
         .with_single_cert(vec![cert], priv_key)
         .unwrap();
+    server_config.alpn_protocols = vec![b"stunnel".to_vec()];
 
     let listener = TcpListener::bind(&config.addr).await.unwrap();
     let acceptor = TlsAcceptor::from(Arc::new(server_config));

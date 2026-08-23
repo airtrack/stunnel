@@ -39,12 +39,13 @@ pub fn new(config: &Config) -> Connector {
     certs.add(cert.clone()).unwrap();
 
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let client_config = rustls::ClientConfig::builder_with_provider(provider)
+    let mut client_config = rustls::ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .unwrap()
         .with_root_certificates(certs)
         .with_client_auth_cert(vec![cert], priv_key)
         .unwrap();
+    client_config.alpn_protocols = vec![b"stunnel".to_vec()];
 
     Connector {
         connector: TlsConnector::from(Arc::new(client_config)),

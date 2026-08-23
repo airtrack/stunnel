@@ -8,6 +8,14 @@ private_key = "private_key.pem"
 # tlstcp or quic or s2n-quic
 tunnel_type = "tlstcp"
 
+# quic and s2n-quic
+# reverse proxy: server listens on `listen`, each connection is forwarded
+# through the tunnel to the client-side `target`. Multiple entries supported.
+# reverse_proxy = [
+#     { listen = "0.0.0.0:8081", target = "127.0.0.1:3000" },
+#     { listen = "0.0.0.0:8082", target = "127.0.0.1:22" },
+# ]
+
 # quic config
 # quic = { cc = "bbr|fixed", loss_threshold = 20, fixed_bandwidth = 6000000 }
 

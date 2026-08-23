@@ -5,14 +5,7 @@ use log::{error, info};
 use quinn::Connection;
 use stunnel::{
     print_version, quic, tlstcp,
-    tunnel::{
-        AsyncReadDatagramExt, AsyncWriteDatagramExt, Tunnel,
-        server::{Incoming, accept},
-    },
-};
-use tokio::{
-    io::{AsyncRead, AsyncWrite, copy_bidirectional},
-    net::{TcpStream, UdpSocket},
+    tunnel::server::{handle_all_kinds_tunnels, handle_forward_tunnel},
 };
 
 async fn tlstcp_server(config: Config) -> std::io::Result<()> {
@@ -29,10 +22,10 @@ async fn tlstcp_server(config: Config) -> std::io::Result<()> {
         tokio::spawn(async move {
             if let Ok(conn) = accepting.accept().await {
                 let (mut reader, mut writer) = tlstcp::split(conn);
-                handle_tunnel(&mut writer, &mut reader)
+                handle_forward_tunnel(&mut writer, &mut reader)
                     .await
                     .inspect_err(|error| {
-                        error!("handle tlstcp stream error: {}", error);
+                        error!("handle tlstcp stream error: {error}");
                     })
                     .ok();
             }
@@ -62,7 +55,7 @@ async fn quinn_server(config: Config) -> std::io::Result<()> {
                 handle_quinn_conn(conn)
                     .await
                     .inspect_err(|error| {
-                        error!("handle quic conn error: {}", error);
+                        error!("handle quic conn error: {error}");
                     })
                     .ok();
             }
@@ -71,18 +64,7 @@ async fn quinn_server(config: Config) -> std::io::Result<()> {
 }
 
 async fn handle_quinn_conn(conn: Connection) -> std::io::Result<()> {
-    loop {
-        let (mut send, mut recv) = conn.accept_bi().await?;
-
-        tokio::spawn(async move {
-            handle_tunnel(&mut send, &mut recv)
-                .await
-                .inspect_err(|error| {
-                    error!("handle quic stream error: {}", error);
-                })
-                .ok();
-        });
-    }
+    handle_all_kinds_tunnels(conn.clone(), conn).await
 }
 
 async fn s2n_server(config: Config) -> std::io::Result<()> {
@@ -106,86 +88,16 @@ async fn s2n_server(config: Config) -> std::io::Result<()> {
             handle_s2n_conn(conn)
                 .await
                 .inspect_err(|error| {
-                    error!("handle quic conn error: {}", error);
+                    error!("handle quic conn error: {error}");
                 })
                 .ok();
         });
     }
 }
 
-async fn handle_s2n_conn(mut conn: s2n_quic::Connection) -> std::io::Result<()> {
-    loop {
-        let stream = conn
-            .accept_bidirectional_stream()
-            .await?
-            .ok_or(std::io::Error::new(
-                std::io::ErrorKind::ConnectionAborted,
-                "conn closed",
-            ))?;
-        let (mut recv, mut send) = stream.split();
-
-        tokio::spawn(async move {
-            handle_tunnel(&mut send, &mut recv)
-                .await
-                .inspect_err(|error| {
-                    error!("handle quic stream error: {}", error);
-                })
-                .ok();
-        });
-    }
-}
-
-async fn handle_tunnel<S, R>(send: S, recv: R) -> std::io::Result<(u64, u64)>
-where
-    S: AsyncWrite + Send + Unpin,
-    R: AsyncRead + Send + Unpin,
-{
-    match accept(send, recv).await? {
-        Incoming::UdpTunnel(mut tun) => {
-            let socket = UdpSocket::bind("0.0.0.0:0").await?;
-            tun.response(socket.local_addr()?).await?;
-            copy_bidirectional_udp_socket(tun, &socket).await
-        }
-        Incoming::TcpTunnel((mut tun, destination)) => {
-            let mut stream = TcpStream::connect(destination).await?;
-            tun.response(stream.local_addr()?).await?;
-            copy_bidirectional(&mut tun, &mut stream).await
-        }
-    }
-}
-
-async fn copy_bidirectional_udp_socket<S, R>(
-    tun: Tunnel<S, R>,
-    socket: &UdpSocket,
-) -> std::io::Result<(u64, u64)>
-where
-    S: AsyncWrite + Send + Unpin,
-    R: AsyncRead + Send + Unpin,
-{
-    async fn r<S>(socket: &UdpSocket, send: &mut S) -> std::io::Result<()>
-    where
-        S: AsyncWrite + Send + Unpin,
-    {
-        let mut buf = [0u8; 1500];
-        loop {
-            let (n, from) = socket.recv_from(&mut buf).await?;
-            send.send_datagram(&buf[..n], from).await?;
-        }
-    }
-
-    async fn w<R>(socket: &UdpSocket, recv: &mut R) -> std::io::Result<()>
-    where
-        R: AsyncRead + Send + Unpin,
-    {
-        let mut buf = [0u8; 1500];
-        loop {
-            let (n, target) = recv.recv_datagram(&mut buf).await?;
-            socket.send_to(&buf[..n], target).await?;
-        }
-    }
-
-    let (mut send, mut recv) = tun.split();
-    futures::try_join!(r(socket, &mut send), w(socket, &mut recv)).map(|_| (0, 0))
+async fn handle_s2n_conn(conn: s2n_quic::Connection) -> std::io::Result<()> {
+    let (conn, acceptor) = conn.split();
+    handle_all_kinds_tunnels(conn, acceptor).await
 }
 
 #[derive(Parser)]
