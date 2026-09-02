@@ -42,10 +42,10 @@ async fn quinn_server(config: ServerConfig) -> std::io::Result<()> {
     let endpoint = quic::quinn::server::new(&quic_config)?;
 
     loop {
-        let incoming = endpoint.accept().await.ok_or(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "endpoint closed",
-        ))?;
+        let incoming = endpoint
+            .accept()
+            .await
+            .ok_or(std::io::Error::other("endpoint closed"))?;
 
         tokio::spawn(async move {
             if let Ok(conn) = incoming.await {
@@ -74,10 +74,10 @@ async fn s2n_server(config: ServerConfig) -> std::io::Result<()> {
     let mut endpoint = quic::s2n_quic::server::new(&quic_config)?;
 
     loop {
-        let conn = endpoint.accept().await.ok_or(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "endpoint closed",
-        ))?;
+        let conn = endpoint
+            .accept()
+            .await
+            .ok_or(std::io::Error::other("endpoint closed"))?;
 
         tokio::spawn(async move {
             handle_s2n_conn(conn)

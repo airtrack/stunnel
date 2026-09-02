@@ -136,10 +136,10 @@ where
             }
         }
         if !registered {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("register reverse proxy {} failed", rp.listen),
-            ));
+            return Err(std::io::Error::other(format!(
+                "register reverse proxy {} failed",
+                rp.listen
+            )));
         }
     }
     Ok(())

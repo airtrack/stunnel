@@ -22,10 +22,10 @@ fn main() {
     let CertifiedKey { cert, key_pair } = generate_simple_self_signed(subject_alt_names).unwrap();
 
     let mut cert_file = File::create("stunnel_cert.pem").unwrap();
-    cert_file.write(cert.pem().as_bytes()).unwrap();
+    cert_file.write_all(cert.pem().as_bytes()).unwrap();
 
     let mut priv_file = File::create("private_key.pem").unwrap();
     priv_file
-        .write(key_pair.serialize_pem().as_bytes())
+        .write_all(key_pair.serialize_pem().as_bytes())
         .unwrap();
 }

@@ -8,11 +8,10 @@ use s2n_quic::{
 use crate::quic::{Config, CongestionControl, s2n_quic::FixedBandwidthEndpoint};
 
 pub fn new(config: &Config) -> std::io::Result<Server> {
-    new_server(config)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error.to_string()))
+    new_server(config).map_err(std::io::Error::other)
 }
 
-fn new_server(config: &Config) -> Result<Server, Box<dyn Error>> {
+fn new_server(config: &Config) -> Result<Server, Box<dyn Error + Send + Sync>> {
     let limits = Limits::new()
         .with_max_open_local_bidirectional_streams(10000)?
         .with_max_open_remote_bidirectional_streams(10000)?

@@ -11,7 +11,7 @@ impl OpenTunnel for s2n_quic::connection::Handle {
         let stream = self
             .open_bidirectional_stream()
             .await
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+            .map_err(std::io::Error::other)?;
         let (recv, send) = stream.split();
         Ok(Tunnel::new(send, recv))
     }

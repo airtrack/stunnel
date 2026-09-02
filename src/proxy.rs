@@ -52,7 +52,6 @@ where
     loop {
         let (stream, _) = listener.accept().await?;
 
-        let id = id;
         let opener = opener.clone();
 
         tokio::spawn(async move {
@@ -104,7 +103,6 @@ where
     loop {
         let (stream, _) = listener.accept().await?;
 
-        let id = id;
         let opener = opener.clone();
 
         tokio::spawn(async move {

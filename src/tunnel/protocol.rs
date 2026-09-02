@@ -75,7 +75,7 @@ where
         let mut buf = vec![0u8; n];
         self.read_exact(&mut buf)
             .await
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+            .map_err(std::io::Error::other)?;
         String::from_utf8(buf)
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid string"))
     }
@@ -138,7 +138,7 @@ where
     reader
         .read_exact(&mut addr)
         .await
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+        .map_err(std::io::Error::other)?;
 
     if let Some(addr) = std::str::from_utf8(&addr)
         .ok()
@@ -146,21 +146,15 @@ where
     {
         let size = reader.read_u16().await? as usize;
         if size > buf.len() {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "recv buffer overflow",
-            ))
+            Err(std::io::Error::other("recv buffer overflow"))
         } else {
             reader
                 .read_exact(&mut buf[..size])
                 .await
-                .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+                .map_err(std::io::Error::other)?;
             Ok((size, addr))
         }
     } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "invalid addr",
-        ))
+        Err(std::io::Error::other("invalid addr"))
     }
 }

@@ -8,10 +8,7 @@ impl OpenTunnel for quinn::Connection {
     type R = quinn::RecvStream;
 
     async fn open_tunnel(&mut self) -> std::io::Result<Tunnel<Self::S, Self::R>> {
-        let (send, recv) = self
-            .open_bi()
-            .await
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+        let (send, recv) = self.open_bi().await.map_err(std::io::Error::other)?;
         Ok(Tunnel::new(send, recv))
     }
 }

@@ -41,12 +41,10 @@ impl Accepting {
 }
 
 pub async fn new(config: &Config) -> std::io::Result<Acceptor> {
-    new_server(config)
-        .await
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error.to_string()))
+    new_server(config).await.map_err(std::io::Error::other)
 }
 
-async fn new_server(config: &Config) -> Result<Acceptor, Box<dyn Error>> {
+async fn new_server(config: &Config) -> Result<Acceptor, Box<dyn Error + Send + Sync>> {
     let cert = CertificateDer::from_pem_file(&config.cert)?;
     let priv_key = PrivateKeyDer::from_pem_file(&config.priv_key)?;
 

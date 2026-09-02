@@ -8,11 +8,10 @@ use crate::quic::Config;
 use super::cc_factory;
 
 pub fn new(config: &Config) -> std::io::Result<Endpoint> {
-    new_client(config)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error.to_string()))
+    new_client(config).map_err(std::io::Error::other)
 }
 
-fn new_client(config: &Config) -> Result<Endpoint, Box<dyn Error>> {
+fn new_client(config: &Config) -> Result<Endpoint, Box<dyn Error + Send + Sync>> {
     let cert = CertificateDer::from_pem_file(&config.cert)?;
     let priv_key = PrivateKeyDer::from_pem_file(&config.priv_key)?;
 

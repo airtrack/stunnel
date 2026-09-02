@@ -43,7 +43,7 @@ async fn quinn_client(
         let endpoint = quic::quinn::client::new(&client_config)?;
         let conn = endpoint
             .connect(config.server_addr, &config.server_name)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+            .map_err(std::io::Error::other)?;
 
         match conn.await {
             Ok(conn) => {
