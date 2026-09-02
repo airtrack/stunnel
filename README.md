@@ -1,6 +1,6 @@
 # STunnel
 
-Simple SOCKS5/HTTP tunnel. SOCKS5 on client side provides NO AUTHENTICATION TCP/UDP proxy. Version 2.0 based on QUIC and TLS-TCP.
+Simple SOCKS5/HTTP tunnel. SOCKS5 on client side provides NO AUTHENTICATION TCP/UDP proxy. Version 3.0 based on QUIC and TLS-TCP.
 
 ```
                 .                      |                     .
@@ -18,13 +18,14 @@ Simple SOCKS5/HTTP tunnel. SOCKS5 on client side provides NO AUTHENTICATION TCP/
                 .                      |                     .
 ```
 
-## Version 2.0 status
+## Version 3.0 status
 
 ### Proxy type
 
 - [x] HTTP proxy
 - [x] SOCKS5 TCP proxy
 - [x] SOCKS5 UDP proxy
+- [x] Reverse proxy
 
 ### Tunnel type
 
