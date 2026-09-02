@@ -11,8 +11,8 @@ use crate::tunnel::{
 
 #[derive(Clone)]
 pub struct ReverseTunnel {
-    pub listen: String,
-    pub target: String,
+    pub listen: SocketAddr,
+    pub target: SocketAddr,
 }
 
 pub async fn connect_tcp_tunnel<O>(
@@ -113,7 +113,8 @@ where
         // listeners may still hold the port on the server
         let mut registered = false;
         for attempt in 0..5 {
-            tun.send_register_reverse(&rp.listen, &rp.target).await?;
+            tun.send_register_reverse(&rp.listen.to_string(), &rp.target.to_string())
+                .await?;
             match tun.read_control_reply().await? {
                 ControlReply::Ok(bind) => {
                     info!(

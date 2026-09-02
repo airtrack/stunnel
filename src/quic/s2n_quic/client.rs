@@ -1,11 +1,11 @@
-use std::{error::Error, path::Path, time::Duration};
+use std::{error::Error, time::Duration};
 
 use s2n_quic::{
     Client,
     provider::{congestion_controller::bbr, limits::Limits, tls},
 };
 
-use crate::quic::{Config, s2n_quic::FixedBandwidthEndpoint};
+use crate::quic::{Config, CongestionControl, s2n_quic::FixedBandwidthEndpoint};
 
 pub fn new(config: &Config) -> std::io::Result<Client> {
     new_client(config)
@@ -21,29 +21,29 @@ fn new_client(config: &Config) -> Result<Client, Box<dyn Error>> {
     let alpn: Vec<Vec<u8>> = vec![b"stunnel".to_vec()];
     let tls = tls::default::Client::builder()
         .with_application_protocols(alpn.iter())?
-        .with_certificate(Path::new(&config.cert))?
-        .with_client_identity(Path::new(&config.cert), Path::new(&config.priv_key))?
+        .with_certificate(config.cert.as_path())?
+        .with_client_identity(config.cert.as_path(), config.priv_key.as_path())?
         .build()?;
 
-    let client = match config.cc.as_str() {
-        "fixed" => {
+    let client = match config.transport.cc {
+        CongestionControl::Fixed => {
             let fixed_bandwidth = FixedBandwidthEndpoint {
-                bandwidth: config.fixed_bandwidth,
+                bandwidth: config.transport.fixed_bandwidth,
             };
             Client::builder()
                 .with_tls(tls)?
-                .with_io(config.addr.as_str())?
+                .with_io(config.addr)?
                 .with_congestion_controller(fixed_bandwidth)?
                 .with_limits(limits)?
                 .start()?
         }
-        "bbr" | _ => {
+        CongestionControl::Bbr => {
             let bbr = bbr::Builder::default()
-                .with_loss_threshold(config.loss_threshold)
+                .with_loss_threshold(config.transport.loss_threshold)
                 .build();
             Client::builder()
                 .with_tls(tls)?
-                .with_io(config.addr.as_str())?
+                .with_io(config.addr)?
                 .with_congestion_controller(bbr)?
                 .with_limits(limits)?
                 .start()?

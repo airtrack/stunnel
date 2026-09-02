@@ -1,5 +1,7 @@
 use shadow_rs::shadow;
 
+pub mod config;
+pub mod proxy;
 pub mod quic;
 pub mod tlstcp;
 pub mod tunnel;

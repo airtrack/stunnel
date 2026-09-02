@@ -2,7 +2,7 @@ use std::{any::Any, sync::Arc, time::Instant};
 
 use quinn::congestion::{BbrConfig, Controller, ControllerFactory};
 
-use crate::quic::Config;
+use crate::quic::{Config, CongestionControl};
 
 pub mod client;
 pub mod server;
@@ -49,10 +49,10 @@ impl ControllerFactory for FixedBandwidth {
 }
 
 fn cc_factory(config: &Config) -> Arc<dyn ControllerFactory + Send + Sync> {
-    match config.cc.as_str() {
-        "fixed" => Arc::new(FixedBandwidth {
-            bandwidth: config.fixed_bandwidth as u64,
+    match config.transport.cc {
+        CongestionControl::Fixed => Arc::new(FixedBandwidth {
+            bandwidth: config.transport.fixed_bandwidth as u64,
         }),
-        _ => Arc::new(BbrConfig::default()),
+        CongestionControl::Bbr => Arc::new(BbrConfig::default()),
     }
 }

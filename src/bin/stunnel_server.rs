@@ -1,20 +1,19 @@
-use std::fs;
-
 use clap::Parser;
 use log::{error, info};
 use quinn::Connection;
 use stunnel::{
+    config::{self, QuicBackend, ServerConfig},
     print_version, quic, tlstcp,
     tunnel::server::{handle_all_kinds_tunnels, handle_forward_tunnel},
 };
 
-async fn tlstcp_server(config: Config) -> std::io::Result<()> {
+async fn tlstcp_server(config: ServerConfig) -> std::io::Result<()> {
     let tlstcp_config = tlstcp::server::Config {
         addr: config.listen,
         cert: config.cert,
         priv_key: config.priv_key,
     };
-    let acceptor = tlstcp::server::new(&tlstcp_config).await;
+    let acceptor = tlstcp::server::new(&tlstcp_config).await?;
 
     loop {
         let accepting = acceptor.accept().await?;
@@ -33,16 +32,14 @@ async fn tlstcp_server(config: Config) -> std::io::Result<()> {
     }
 }
 
-async fn quinn_server(config: Config) -> std::io::Result<()> {
+async fn quinn_server(config: ServerConfig) -> std::io::Result<()> {
     let quic_config = quic::Config {
         addr: config.listen,
         cert: config.cert,
         priv_key: config.priv_key,
-        cc: config.quic.cc,
-        loss_threshold: config.quic.loss_threshold,
-        fixed_bandwidth: config.quic.fixed_bandwidth,
+        transport: config.quic.transport,
     };
-    let endpoint = quic::quinn::server::new(&quic_config).unwrap();
+    let endpoint = quic::quinn::server::new(&quic_config)?;
 
     loop {
         let incoming = endpoint.accept().await.ok_or(std::io::Error::new(
@@ -67,16 +64,14 @@ async fn handle_quinn_conn(conn: Connection) -> std::io::Result<()> {
     handle_all_kinds_tunnels(conn.clone(), conn).await
 }
 
-async fn s2n_server(config: Config) -> std::io::Result<()> {
+async fn s2n_server(config: ServerConfig) -> std::io::Result<()> {
     let quic_config = quic::Config {
         addr: config.listen,
         cert: config.cert,
         priv_key: config.priv_key,
-        cc: config.quic.cc,
-        loss_threshold: config.quic.loss_threshold,
-        fixed_bandwidth: config.quic.fixed_bandwidth,
+        transport: config.quic.transport,
     };
-    let mut endpoint = quic::s2n_quic::server::new(&quic_config).unwrap();
+    let mut endpoint = quic::s2n_quic::server::new(&quic_config)?;
 
     loop {
         let conn = endpoint.accept().await.ok_or(std::io::Error::new(
@@ -115,37 +110,6 @@ struct Args {
     config: Option<String>,
 }
 
-#[derive(serde::Deserialize, Clone)]
-struct Config {
-    listen: String,
-    priv_key: String,
-    cert: String,
-
-    #[serde(default)]
-    quic: QuicConfig,
-}
-
-#[derive(serde::Deserialize, Clone)]
-struct QuicConfig {
-    server_type: String,
-    #[serde(default)]
-    cc: String,
-    loss_threshold: u32,
-    #[serde(default)]
-    fixed_bandwidth: u32,
-}
-
-impl Default for QuicConfig {
-    fn default() -> Self {
-        Self {
-            server_type: "s2n-quic".to_string(),
-            cc: "bbr".to_string(),
-            loss_threshold: 20,
-            fixed_bandwidth: 6 * 1024 * 1024,
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -161,20 +125,29 @@ async fn main() {
         .init();
     info!("starting up");
 
-    let config = args.config.unwrap();
-    let content = String::from_utf8(fs::read(config).unwrap()).unwrap();
-    let config: Config = toml::from_str(&content).unwrap();
+    let config_path = args.config.unwrap();
+    let config = match config::load_server(config_path) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("failed to load server config: {error}");
+            return;
+        }
+    };
 
-    match config.quic.server_type.as_str() {
-        "s2n-quic" => {
+    let result = match config.quic.server_type {
+        QuicBackend::S2nQuic => {
             let t = tlstcp_server(config.clone());
             let q = s2n_server(config);
-            futures::try_join!(t, q).ok();
+            futures::try_join!(t, q).map(|_| ())
         }
-        "quic" | _ => {
+        QuicBackend::Quinn => {
             let t = tlstcp_server(config.clone());
             let q = quinn_server(config);
-            futures::try_join!(t, q).ok();
+            futures::try_join!(t, q).map(|_| ())
         }
+    };
+
+    if let Err(error) = result {
+        eprintln!("stunnel server error: {error}");
     }
 }

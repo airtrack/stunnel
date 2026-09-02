@@ -1,29 +1,14 @@
-use std::fs;
-use std::net::SocketAddr;
-
 use clap::Parser;
 use log::{error, info};
-use socks5::{AcceptResult, Address, UdpSocket, UdpSocketBuf, UdpSocketHolder};
-use stunnel::tunnel::{
-    AcceptTunnel, AsyncReadDatagramExt, AsyncWriteDatagramExt, OpenTunnel,
-    client::{ReverseTunnel, connect_tcp_tunnel, connect_udp_tunnel, run_reverse_tunnels},
+use stunnel::{
+    config::{self, ClientConfig, ReverseProxyConfig, TunnelType},
+    print_version, proxy, quic, tlstcp,
+    tunnel::client::ReverseTunnel,
 };
-use stunnel::{print_version, quic, tlstcp};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, copy_bidirectional};
-use tokio::net::{TcpListener, TcpStream};
-
-trait IoErrorContext<T> {
-    fn context(self, msg: &str) -> std::io::Result<T>;
-}
-
-impl<T> IoErrorContext<T> for std::io::Result<T> {
-    fn context(self, msg: &str) -> std::io::Result<T> {
-        self.map_err(|error| std::io::Error::new(error.kind(), format!("{msg}: {error}")))
-    }
-}
+use tokio::net::TcpListener;
 
 async fn tlstcp_client(
-    config: Config,
+    config: ClientConfig,
     http_listener: TcpListener,
     socks5_listener: TcpListener,
 ) -> std::io::Result<()> {
@@ -34,37 +19,36 @@ async fn tlstcp_client(
         priv_key: config.private_key,
     };
 
-    let connector = tlstcp::client::new(&tlstcp_config);
-    let h = accept_http_tunnels(&http_listener, &connector, "tlstcp");
-    let s = accept_socks5_tunnels(&socks5_listener, &connector, "tlstcp");
+    let connector = tlstcp::client::new(&tlstcp_config)?;
+    let h = proxy::accept_http_tunnels(&http_listener, &connector, "tlstcp");
+    let s = proxy::accept_socks5_tunnels(&socks5_listener, &connector, "tlstcp");
 
     futures::try_join!(h, s).map(|_| ())
 }
 
 async fn quinn_client(
-    config: Config,
+    config: ClientConfig,
     http_listener: TcpListener,
     socks5_listener: TcpListener,
 ) -> std::io::Result<()> {
     let reverse_tunnels = build_reverse_tunnels(&config.reverse_proxy);
-    let addr = config.server_addr.parse().unwrap();
     let client_config = quic::Config {
-        addr: "0.0.0.0:0".to_string(),
+        addr: "0.0.0.0:0".parse().unwrap(),
         cert: config.server_cert,
         priv_key: config.private_key,
-        cc: config.quic.cc,
-        loss_threshold: config.quic.loss_threshold,
-        fixed_bandwidth: config.quic.fixed_bandwidth,
+        transport: config.quic,
     };
 
     loop {
-        let endpoint = quic::quinn::client::new(&client_config).unwrap();
-        let conn = endpoint.connect(addr, &config.server_name).unwrap();
+        let endpoint = quic::quinn::client::new(&client_config)?;
+        let conn = endpoint
+            .connect(config.server_addr, &config.server_name)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
 
         match conn.await {
             Ok(conn) => {
                 let id = conn.stable_id();
-                run_all_kinds_tunnels(
+                proxy::run_all_kinds_tunnels(
                     conn.clone(),
                     conn,
                     &reverse_tunnels,
@@ -86,33 +70,30 @@ async fn quinn_client(
 }
 
 async fn s2n_client(
-    config: Config,
+    config: ClientConfig,
     http_listener: TcpListener,
     socks5_listener: TcpListener,
 ) -> std::io::Result<()> {
     let reverse_tunnels = build_reverse_tunnels(&config.reverse_proxy);
-    let addr: SocketAddr = config.server_addr.parse().unwrap();
     let client_config = quic::Config {
-        addr: "0.0.0.0:0".to_string(),
+        addr: "0.0.0.0:0".parse().unwrap(),
         cert: config.server_cert,
         priv_key: config.private_key,
-        cc: config.quic.cc,
-        loss_threshold: config.quic.loss_threshold,
-        fixed_bandwidth: config.quic.fixed_bandwidth,
+        transport: config.quic,
     };
 
-    let endpoint = quic::s2n_quic::client::new(&client_config).unwrap();
+    let endpoint = quic::s2n_quic::client::new(&client_config)?;
 
     loop {
-        let connect =
-            s2n_quic::client::Connect::new(addr).with_server_name(config.server_name.clone());
+        let connect = s2n_quic::client::Connect::new(config.server_addr)
+            .with_server_name(config.server_name.clone());
 
         match endpoint.connect(connect).await {
             Ok(mut conn) => {
                 if conn.keep_alive(true).is_ok() {
                     let id = conn.id();
                     let (opener, acceptor) = conn.split();
-                    run_all_kinds_tunnels(
+                    proxy::run_all_kinds_tunnels(
                         opener,
                         acceptor,
                         &reverse_tunnels,
@@ -134,173 +115,6 @@ async fn s2n_client(
     }
 }
 
-// Runs all kinds of tunnels of one connection: the control tunnel (reverse
-// proxy registration), the reverse tunnel accept loop and the forward proxy
-// accept loops. Returns when the connection dies.
-async fn run_all_kinds_tunnels<O, A, D>(
-    opener: O,
-    acceptor: A,
-    reverse_tunnels: &[ReverseTunnel],
-    http_listener: &TcpListener,
-    socks5_listener: &TcpListener,
-    id: D,
-) -> std::io::Result<()>
-where
-    O: OpenTunnel,
-    A: AcceptTunnel,
-    D: std::fmt::Display + Copy + Send + 'static,
-{
-    let r = run_reverse_tunnels(opener.clone(), acceptor, reverse_tunnels);
-    let h = accept_http_tunnels(http_listener, &opener, id);
-    let s = accept_socks5_tunnels(socks5_listener, &opener, id);
-
-    futures::try_join!(h, s, r).map(|_| ())
-}
-
-async fn accept_http_tunnels<O, D>(listener: &TcpListener, opener: &O, id: D) -> std::io::Result<()>
-where
-    O: OpenTunnel,
-    D: std::fmt::Display + Copy + Send + 'static,
-{
-    loop {
-        let (stream, _) = listener.accept().await?;
-
-        let id = id;
-        let opener = opener.clone();
-
-        tokio::spawn(async move {
-            run_http_tunnel(stream, opener)
-                .await
-                .inspect_err(|error| {
-                    error!("http proxy connection(on underlying {id}) error: {error}");
-                })
-                .ok();
-        });
-    }
-}
-
-async fn run_http_tunnel<O>(stream: TcpStream, opener: O) -> std::io::Result<()>
-where
-    O: OpenTunnel,
-{
-    let incoming = httpproxy::accept(stream).await?;
-    let host = incoming.host().to_string();
-
-    match connect_tcp_tunnel(opener, &host).await {
-        Ok((_, mut tun)) => {
-            let (mut stream, req) = incoming.response_200().await.context(&host)?;
-            if let Some(req) = req {
-                tun.write_all(&req).await.context(&host)?;
-            }
-            copy_bidirectional(&mut stream, &mut tun)
-                .await
-                .context(&host)?;
-        }
-        Err(error) => {
-            incoming.response_404().await.context(&host)?;
-            return Err(error).context(&host);
-        }
-    }
-
-    Ok(())
-}
-
-async fn accept_socks5_tunnels<O, D>(
-    listener: &TcpListener,
-    opener: &O,
-    id: D,
-) -> std::io::Result<()>
-where
-    O: OpenTunnel,
-    D: std::fmt::Display + Copy + Send + 'static,
-{
-    loop {
-        let (stream, _) = listener.accept().await?;
-
-        let id = id;
-        let opener = opener.clone();
-
-        tokio::spawn(async move {
-            run_socks5_tunnel(stream, opener)
-                .await
-                .inspect_err(|error| {
-                    error!("socks5 proxy connection(on underlying {id}) error: {error}");
-                })
-                .ok();
-        });
-    }
-}
-
-async fn run_socks5_tunnel<O>(stream: TcpStream, opener: O) -> std::io::Result<()>
-where
-    O: OpenTunnel,
-{
-    match socks5::accept(stream).await? {
-        AcceptResult::Connect(incoming) => {
-            let target = match incoming.destination() {
-                Address::Host(host) => host.clone(),
-                Address::Ip(addr) => addr.to_string(),
-            };
-
-            match connect_tcp_tunnel(opener, &target).await {
-                Ok((bind, mut tun)) => {
-                    let mut stream = incoming.reply_ok(bind).await.context(&target)?;
-                    copy_bidirectional(&mut stream, &mut tun)
-                        .await
-                        .context(&target)?;
-                }
-                Err(error) => {
-                    incoming.reply_err().await.context(&target)?;
-                    return Err(error).context(&target);
-                }
-            }
-        }
-        AcceptResult::UdpAssociate(incoming) => {
-            let mut buf = UdpSocketBuf::new();
-            let (socket, holder, dst) = incoming.recv_wait(&mut buf).await?;
-
-            let tun = connect_udp_tunnel(opener).await?;
-            let (send, recv) = tun.split();
-
-            async fn s<S>(
-                socket: &UdpSocket,
-                mut send: S,
-                mut buf: UdpSocketBuf,
-                addr: SocketAddr,
-            ) -> std::io::Result<()>
-            where
-                S: AsyncWrite + Send + Unpin,
-            {
-                send.send_datagram(buf.as_ref(), addr).await?;
-                loop {
-                    let addr = socket.recv(&mut buf).await?;
-                    send.send_datagram(buf.as_ref(), addr).await?;
-                }
-            }
-
-            async fn r<R>(socket: &UdpSocket, mut recv: R) -> std::io::Result<()>
-            where
-                R: AsyncRead + Send + Unpin,
-            {
-                let mut buf = UdpSocketBuf::new();
-                loop {
-                    let (n, addr) = recv.recv_datagram(buf.as_mut()).await?;
-                    buf.set_len(n);
-                    socket.send(&mut buf, addr).await?;
-                }
-            }
-
-            async fn h(mut holder: UdpSocketHolder) -> std::io::Result<()> {
-                holder.wait().await
-            }
-
-            futures::try_join!(s(&socket, send, buf, dst), r(&socket, recv), h(holder))?;
-        }
-    }
-
-    Ok(())
-}
-
 #[derive(Parser)]
 #[command(disable_version_flag = true)]
 struct Args {
@@ -316,70 +130,17 @@ struct Args {
     config: Option<String>,
 }
 
-#[derive(serde::Deserialize)]
-struct ReverseProxyConfig {
-    listen: String,
-    target: String,
-}
-
 fn build_reverse_tunnels(config: &[ReverseProxyConfig]) -> Vec<ReverseTunnel> {
     config
         .iter()
         .map(|config| ReverseTunnel {
-            listen: config.listen.clone(),
-            target: config.target.clone(),
+            listen: config.listen,
+            target: config.target,
         })
         .collect()
 }
 
-#[derive(serde::Deserialize)]
-struct Config {
-    socks5_listen: String,
-    http_listen: String,
-    server_addr: String,
-    server_name: String,
-    server_cert: String,
-    private_key: String,
-    tunnel_type: String,
-
-    #[serde(default)]
-    reverse_proxy: Vec<ReverseProxyConfig>,
-
-    #[serde(default)]
-    quic: QuicConfig,
-
-    #[cfg(target_os = "macos")]
-    #[serde(default)]
-    macos_logging: MacOsLogging,
-}
-
-#[derive(serde::Deserialize)]
-struct QuicConfig {
-    #[serde(default)]
-    cc: String,
-    loss_threshold: u32,
-    #[serde(default)]
-    fixed_bandwidth: u32,
-}
-
-impl Default for QuicConfig {
-    fn default() -> Self {
-        Self {
-            cc: "bbr".to_string(),
-            loss_threshold: 20,
-            fixed_bandwidth: 6 * 1024 * 1024,
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-#[derive(serde::Deserialize, Default)]
-struct MacOsLogging {
-    enable: bool,
-    subsystem: String,
-}
-
-fn init_log(_config: &Config) {
+fn init_log(_config: &ClientConfig) {
     #[cfg(target_os = "macos")]
     if _config.macos_logging.enable {
         oslog::OsLogger::new(&_config.macos_logging.subsystem)
@@ -405,34 +166,32 @@ async fn main() {
         return;
     }
 
-    let config = args.config.unwrap();
-    let content = String::from_utf8(fs::read(config).unwrap()).unwrap();
-    let config: Config = toml::from_str(&content).unwrap();
+    let config_path = args.config.unwrap();
+    let config = match config::load_client(config_path) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("failed to load client config: {error}");
+            return;
+        }
+    };
 
-    let socks5_listener = TcpListener::bind(&config.socks5_listen).await.unwrap();
-    let http_listener = TcpListener::bind(&config.http_listen).await.unwrap();
+    let socks5_listener = TcpListener::bind(&config.socks5_listen)
+        .await
+        .expect("socks5 bind error");
+    let http_listener = TcpListener::bind(&config.http_listen)
+        .await
+        .expect("http bind error");
 
     init_log(&config);
     info!("starting up");
 
-    match config.tunnel_type.as_str() {
-        "tlstcp" => {
-            tlstcp_client(config, http_listener, socks5_listener)
-                .await
-                .ok();
-        }
-        "quic" => {
-            quinn_client(config, http_listener, socks5_listener)
-                .await
-                .ok();
-        }
-        "s2n-quic" => {
-            s2n_client(config, http_listener, socks5_listener)
-                .await
-                .ok();
-        }
-        _ => {
-            panic!("unknown tunnel_type {}", config.tunnel_type);
-        }
+    let result = match config.tunnel_type {
+        TunnelType::TlsTcp => tlstcp_client(config, http_listener, socks5_listener).await,
+        TunnelType::Quinn => quinn_client(config, http_listener, socks5_listener).await,
+        TunnelType::S2nQuic => s2n_client(config, http_listener, socks5_listener).await,
+    };
+
+    if let Err(error) = result {
+        eprintln!("stunnel client error: {error}");
     }
 }
