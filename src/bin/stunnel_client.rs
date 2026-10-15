@@ -2,8 +2,12 @@ use clap::Parser;
 use log::{error, info};
 use stunnel::{
     config::{self, ClientConfig, ReverseProxyConfig, TunnelType},
-    print_version, proxy, quic, tlstcp,
+    metrics::{TRANSPORT_ACTIVE_CONNECTIONS, TRANSPORT_CONNECTION_DURATION, TRANSPORT_CONNECTIONS},
+    print_version, proxy, quic,
+    telemetry::Telemetry,
+    tlstcp,
     tunnel::client::ReverseTunnel,
+    version,
 };
 use tokio::net::TcpListener;
 
@@ -48,6 +52,12 @@ async fn quinn_client(
         match conn.await {
             Ok(conn) => {
                 let id = conn.stable_id();
+                let active = metrics::gauge!(TRANSPORT_ACTIVE_CONNECTIONS, "transport" => "quic");
+                active.increment(1.0);
+                metrics::counter!(TRANSPORT_CONNECTIONS, "transport" => "quic", "outcome" => "ok")
+                    .increment(1);
+                let started = std::time::Instant::now();
+
                 proxy::run_all_kinds_tunnels(
                     conn.clone(),
                     conn,
@@ -61,8 +71,18 @@ async fn quinn_client(
                     error!("quic connection {id} broken: {error}");
                 })
                 .ok();
+
+                active.decrement(1.0);
+                metrics::histogram!(TRANSPORT_CONNECTION_DURATION, "transport" => "quic")
+                    .record(started.elapsed().as_secs_f64());
             }
             Err(error) => {
+                metrics::counter!(
+                    TRANSPORT_CONNECTIONS,
+                    "transport" => "quic",
+                    "outcome" => "error",
+                )
+                .increment(1);
                 error!("quic connect error: {error}");
             }
         }
@@ -92,6 +112,17 @@ async fn s2n_client(
             Ok(mut conn) => {
                 if conn.keep_alive(true).is_ok() {
                     let id = conn.id();
+                    let active =
+                        metrics::gauge!(TRANSPORT_ACTIVE_CONNECTIONS, "transport" => "s2n-quic");
+                    active.increment(1.0);
+                    metrics::counter!(
+                        TRANSPORT_CONNECTIONS,
+                        "transport" => "s2n-quic",
+                        "outcome" => "ok",
+                    )
+                    .increment(1);
+                    let started = std::time::Instant::now();
+
                     let (opener, acceptor) = conn.split();
                     proxy::run_all_kinds_tunnels(
                         opener,
@@ -106,9 +137,19 @@ async fn s2n_client(
                         error!("quic connection {id} broken: {error}");
                     })
                     .ok();
+
+                    active.decrement(1.0);
+                    metrics::histogram!(TRANSPORT_CONNECTION_DURATION, "transport" => "s2n-quic")
+                        .record(started.elapsed().as_secs_f64());
                 }
             }
             Err(error) => {
+                metrics::counter!(
+                    TRANSPORT_CONNECTIONS,
+                    "transport" => "s2n-quic",
+                    "outcome" => "error",
+                )
+                .increment(1);
                 error!("quic connect error: {error}");
             }
         }
@@ -184,6 +225,14 @@ async fn main() {
 
     init_log(&config);
     info!("starting up");
+
+    let _telemetry = match Telemetry::init(&config.otel, &version("stunnel_client")) {
+        Ok(telemetry) => telemetry,
+        Err(error) => {
+            eprintln!("failed to start metrics: {error}");
+            return;
+        }
+    };
 
     let result = match config.tunnel_type {
         TunnelType::TlsTcp => tlstcp_client(config, http_listener, socks5_listener).await,

@@ -19,5 +19,13 @@ tunnel_type = "tlstcp"
 # quic config
 # quic = { cc = "bbr|fixed", loss_threshold = 20, fixed_bandwidth = 6000000 }
 
+# metrics: counters, gauges and histograms over OTLP/HTTP. Without `otel`, or
+# with an empty endpoint, nothing is exported. `service_name` defaults to
+# stunnel-client.
+otel = { endpoint = "http://10.0.0.36:4318", service_name = "stunnel-client", export_interval_secs = 15 }
+# otel = { endpoint = "http://10.0.0.36:4318", protocol = "http-json",
+#          service_name = "stunnel-client", export_interval_secs = 15,
+#          headers = { authorization = "Bearer ..." } }
+
 # logging to the ULS on macOS
 # macos_logging = { enable = false, subsystem = "stunnel" }

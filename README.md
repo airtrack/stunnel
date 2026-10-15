@@ -58,6 +58,17 @@ Multiple entries are supported. The client registers the listeners on the
 server when the tunnel connects and re-registers after reconnects. The server
 opens streams on the same QUIC connection.
 
+## Metrics
+
+`docs/grafana-metrics-dashboard.json` is a Grafana dashboard over the OTel
+collector's ClickHouse tables (`otel` database). It is generated from the
+panel-per-statement SQL in `docs/grafana-metrics.sql`, which is the file to
+edit:
+
+```
+python3 tools/make_grafana_dashboard.py
+```
+
 ## Work with autoproxy and gatewaysocks
 
 * [autoproxy](https://github.com/airtrack/autoproxy)

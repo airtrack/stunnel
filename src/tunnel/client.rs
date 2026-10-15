@@ -4,6 +4,7 @@ use log::{error, info};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, copy_bidirectional};
 use tokio::net::TcpStream;
 
+use crate::metrics::REVERSE_REGISTRATIONS;
 use crate::tunnel::{
     AcceptTunnel, ControlReply, OpenTunnel, TYPE_CONTROL, TYPE_TCP_FWD, TYPE_TCP_REV, TYPE_UDP_FWD,
     Tunnel,
@@ -121,6 +122,7 @@ where
                         "reverse proxy {} -> {}: bound on server {bind}",
                         rp.listen, rp.target
                     );
+                    metrics::counter!(REVERSE_REGISTRATIONS, "outcome" => "ok").increment(1);
                     registered = true;
                     break;
                 }
@@ -131,6 +133,7 @@ where
                         rp.target,
                         attempt + 1
                     );
+                    metrics::counter!(REVERSE_REGISTRATIONS, "outcome" => "error").increment(1);
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
             }

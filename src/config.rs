@@ -7,6 +7,7 @@ use std::{
 use serde::{Deserialize, de::DeserializeOwned};
 
 use crate::quic::{CongestionControl, QuicConfig};
+use crate::telemetry::OtelConfig;
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 pub enum TunnelType {
@@ -49,6 +50,9 @@ pub struct ClientConfig {
     #[serde(default)]
     pub quic: QuicConfig,
 
+    #[serde(default = "client_otel")]
+    pub otel: OtelConfig,
+
     #[cfg(target_os = "macos")]
     #[serde(default)]
     pub macos_logging: MacOsLogging,
@@ -86,6 +90,9 @@ pub struct ServerConfig {
 
     #[serde(default)]
     pub quic: ServerQuicConfig,
+
+    #[serde(default = "server_otel")]
+    pub otel: OtelConfig,
 }
 
 impl ServerConfig {
@@ -160,6 +167,16 @@ fn invalid_config(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
 }
 
+// The two binaries report under their own service name, so one dashboard can
+// be read against either end without editing the config.
+fn client_otel() -> OtelConfig {
+    OtelConfig::for_service("stunnel-client")
+}
+
+fn server_otel() -> OtelConfig {
+    OtelConfig::for_service("stunnel-server")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,10 +227,58 @@ mod tests {
                 loss_threshold: 0,
                 fixed_bandwidth: 0,
             },
+            otel: client_otel(),
             #[cfg(target_os = "macos")]
             macos_logging: MacOsLogging::default(),
         };
 
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn each_binary_defaults_to_its_own_service_name() {
+        let client: ClientConfig = toml::from_str(
+            r#"
+                socks5_listen = "127.0.0.1:1080"
+                http_listen = "127.0.0.1:8080"
+                server_addr = "127.0.0.1:12345"
+                server_name = "stunnel"
+                server_cert = "cert.pem"
+                private_key = "key.pem"
+                tunnel_type = "tlstcp"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(client.otel.service_name, "stunnel-client");
+
+        let server: ServerConfig = toml::from_str(
+            r#"
+                listen = "127.0.0.1:12345"
+                priv_key = "key.pem"
+                cert = "cert.pem"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(server.otel.service_name, "stunnel-server");
+
+        // A config that names the service wins over the default.
+        let client: ClientConfig = toml::from_str(
+            r#"
+                socks5_listen = "127.0.0.1:1080"
+                http_listen = "127.0.0.1:8080"
+                server_addr = "127.0.0.1:12345"
+                server_name = "stunnel"
+                server_cert = "cert.pem"
+                private_key = "key.pem"
+                tunnel_type = "tlstcp"
+                otel = { endpoint = "http://127.0.0.1:4318", service_name = "stunnel-a" }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(client.otel.service_name, "stunnel-a");
+        assert_eq!(
+            client.otel.resolved_endpoint().as_deref(),
+            Some("http://127.0.0.1:4318")
+        );
     }
 }

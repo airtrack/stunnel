@@ -12,6 +12,15 @@ chrono = "0.4"
 clap = { version = "4.5.60", features = ["derive"] }
 log = "0.4"
 env_logger = "0.11"
+metrics = "0.24"
+metrics-exporter-otel = "0.3"
+opentelemetry = { version = "0.31", default-features = false, features = ["metrics"] }
+opentelemetry_sdk = { version = "0.31", default-features = false, features = ["metrics"] }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = [
+    "http-proto",
+    "reqwest-blocking-client",
+    "metrics",
+] }
 futures = "0.3"
 async-trait = "*"
 httparse = "*"

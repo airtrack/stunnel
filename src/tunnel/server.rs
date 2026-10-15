@@ -5,6 +5,7 @@ use tokio::{
     net::{TcpListener, TcpStream, UdpSocket},
 };
 
+use crate::metrics::{REVERSE_REGISTRATIONS, UDP_BYTES, UDP_PACKETS};
 use crate::tunnel::{
     AcceptTunnel, AsyncReadDatagramExt, AsyncWriteDatagramExt, CTRL_ACK, CTRL_ERR,
     CTRL_REGISTER_REVERSE, CTRL_REGISTER_REVERSE_END, OpenTunnel, TYPE_CONTROL, TYPE_TCP_FWD,
@@ -146,6 +147,8 @@ where
         loop {
             let (n, from) = socket.recv_from(&mut buf).await?;
             send.send_datagram(&buf[..n], from).await?;
+            metrics::counter!(UDP_PACKETS, "direction" => "down").increment(1);
+            metrics::counter!(UDP_BYTES, "direction" => "down").increment(n as u64);
         }
     }
 
@@ -157,6 +160,8 @@ where
         loop {
             let (n, target) = recv.recv_datagram(&mut buf).await?;
             socket.send_to(&buf[..n], target).await?;
+            metrics::counter!(UDP_PACKETS, "direction" => "up").increment(1);
+            metrics::counter!(UDP_BYTES, "direction" => "up").increment(n as u64);
         }
     }
 
@@ -227,12 +232,14 @@ where
                         let bind = listener.local_addr()?.to_string();
                         log::info!("reverse listener {listen} -> {target} bound: {bind}");
                         listeners.push((listener, target));
+                        metrics::counter!(REVERSE_REGISTRATIONS, "outcome" => "ok").increment(1);
 
                         tun.write_u8(CTRL_ACK).await?;
                         tun.write_str8(&bind).await?;
                     }
                     Err(error) => {
                         let reason = error.to_string();
+                        metrics::counter!(REVERSE_REGISTRATIONS, "outcome" => "error").increment(1);
                         tun.write_u8(CTRL_ERR).await?;
                         tun.write_str8(&reason).await?;
                         log::error!("bind reverse listener {listen} failed: {reason}");

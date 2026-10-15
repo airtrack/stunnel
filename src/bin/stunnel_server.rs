@@ -3,8 +3,12 @@ use log::{error, info};
 use quinn::Connection;
 use stunnel::{
     config::{self, QuicBackend, ServerConfig},
-    print_version, quic, tlstcp,
+    metrics::{TRANSPORT_ACTIVE_CONNECTIONS, TRANSPORT_CONNECTION_DURATION, TRANSPORT_CONNECTIONS},
+    print_version, quic,
+    telemetry::Telemetry,
+    tlstcp,
     tunnel::server::{handle_all_kinds_tunnels, handle_forward_tunnel},
+    version,
 };
 
 async fn tlstcp_server(config: ServerConfig) -> std::io::Result<()> {
@@ -20,6 +24,16 @@ async fn tlstcp_server(config: ServerConfig) -> std::io::Result<()> {
 
         tokio::spawn(async move {
             if let Ok(conn) = accepting.accept().await {
+                let active = metrics::gauge!(TRANSPORT_ACTIVE_CONNECTIONS, "transport" => "tlstcp");
+                active.increment(1.0);
+                metrics::counter!(
+                    TRANSPORT_CONNECTIONS,
+                    "transport" => "tlstcp",
+                    "outcome" => "ok",
+                )
+                .increment(1);
+                let started = std::time::Instant::now();
+
                 let (mut reader, mut writer) = tlstcp::split(conn);
                 handle_forward_tunnel(&mut writer, &mut reader)
                     .await
@@ -27,6 +41,10 @@ async fn tlstcp_server(config: ServerConfig) -> std::io::Result<()> {
                         error!("handle tlstcp stream error: {error}");
                     })
                     .ok();
+
+                active.decrement(1.0);
+                metrics::histogram!(TRANSPORT_CONNECTION_DURATION, "transport" => "tlstcp")
+                    .record(started.elapsed().as_secs_f64());
             }
         });
     }
@@ -49,12 +67,22 @@ async fn quinn_server(config: ServerConfig) -> std::io::Result<()> {
 
         tokio::spawn(async move {
             if let Ok(conn) = incoming.await {
+                let active = metrics::gauge!(TRANSPORT_ACTIVE_CONNECTIONS, "transport" => "quic");
+                active.increment(1.0);
+                metrics::counter!(TRANSPORT_CONNECTIONS, "transport" => "quic", "outcome" => "ok")
+                    .increment(1);
+                let started = std::time::Instant::now();
+
                 handle_quinn_conn(conn)
                     .await
                     .inspect_err(|error| {
                         error!("handle quic conn error: {error}");
                     })
                     .ok();
+
+                active.decrement(1.0);
+                metrics::histogram!(TRANSPORT_CONNECTION_DURATION, "transport" => "quic")
+                    .record(started.elapsed().as_secs_f64());
             }
         });
     }
@@ -80,12 +108,26 @@ async fn s2n_server(config: ServerConfig) -> std::io::Result<()> {
             .ok_or(std::io::Error::other("endpoint closed"))?;
 
         tokio::spawn(async move {
+            let active = metrics::gauge!(TRANSPORT_ACTIVE_CONNECTIONS, "transport" => "s2n-quic");
+            active.increment(1.0);
+            metrics::counter!(
+                TRANSPORT_CONNECTIONS,
+                "transport" => "s2n-quic",
+                "outcome" => "ok",
+            )
+            .increment(1);
+            let started = std::time::Instant::now();
+
             handle_s2n_conn(conn)
                 .await
                 .inspect_err(|error| {
                     error!("handle quic conn error: {error}");
                 })
                 .ok();
+
+            active.decrement(1.0);
+            metrics::histogram!(TRANSPORT_CONNECTION_DURATION, "transport" => "s2n-quic")
+                .record(started.elapsed().as_secs_f64());
         });
     }
 }
@@ -130,6 +172,14 @@ async fn main() {
         Ok(config) => config,
         Err(error) => {
             eprintln!("failed to load server config: {error}");
+            return;
+        }
+    };
+
+    let _telemetry = match Telemetry::init(&config.otel, &version("stunnel_server")) {
+        Ok(telemetry) => telemetry,
+        Err(error) => {
+            eprintln!("failed to start metrics: {error}");
             return;
         }
     };

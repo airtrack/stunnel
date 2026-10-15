@@ -1,10 +1,14 @@
 use std::net::SocketAddr;
+use std::time::Instant;
 
 use log::error;
 use socks5::{AcceptResult, Address, UdpSocket, UdpSocketBuf, UdpSocketHolder};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, copy_bidirectional};
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::metrics::{
+    PROXY_ACTIVE_CONNECTIONS, PROXY_CONNECTION_DURATION, PROXY_CONNECTIONS, UDP_BYTES, UDP_PACKETS,
+};
 use crate::tunnel::{
     AcceptTunnel, AsyncReadDatagramExt, AsyncWriteDatagramExt, OpenTunnel,
     client::{ReverseTunnel, connect_tcp_tunnel, connect_udp_tunnel, run_reverse_tunnels},
@@ -55,12 +59,21 @@ where
         let opener = opener.clone();
 
         tokio::spawn(async move {
+            let started = Instant::now();
+            let active = metrics::gauge!(PROXY_ACTIVE_CONNECTIONS, "protocol" => "http");
+            active.increment(1.0);
+
             run_http_tunnel(stream, opener)
                 .await
                 .inspect_err(|error| {
                     error!("http proxy connection(on underlying {id}) error: {error}");
                 })
                 .ok();
+
+            active.decrement(1.0);
+            metrics::counter!(PROXY_CONNECTIONS, "protocol" => "http").increment(1);
+            metrics::histogram!(PROXY_CONNECTION_DURATION, "protocol" => "http")
+                .record(started.elapsed().as_secs_f64());
         });
     }
 }
@@ -106,12 +119,21 @@ where
         let opener = opener.clone();
 
         tokio::spawn(async move {
+            let started = Instant::now();
+            let active = metrics::gauge!(PROXY_ACTIVE_CONNECTIONS, "protocol" => "socks5");
+            active.increment(1.0);
+
             run_socks5_tunnel(stream, opener)
                 .await
                 .inspect_err(|error| {
                     error!("socks5 proxy connection(on underlying {id}) error: {error}");
                 })
                 .ok();
+
+            active.decrement(1.0);
+            metrics::counter!(PROXY_CONNECTIONS, "protocol" => "socks5").increment(1);
+            metrics::histogram!(PROXY_CONNECTION_DURATION, "protocol" => "socks5")
+                .record(started.elapsed().as_secs_f64());
         });
     }
 }
@@ -157,9 +179,15 @@ where
                 S: AsyncWrite + Send + Unpin,
             {
                 send.send_datagram(buf.as_ref(), addr).await?;
+                metrics::counter!(UDP_PACKETS, "direction" => "up").increment(1);
+                metrics::counter!(UDP_BYTES, "direction" => "up")
+                    .increment(buf.as_ref().len() as u64);
                 loop {
                     let addr = socket.recv(&mut buf).await?;
                     send.send_datagram(buf.as_ref(), addr).await?;
+                    metrics::counter!(UDP_PACKETS, "direction" => "up").increment(1);
+                    metrics::counter!(UDP_BYTES, "direction" => "up")
+                        .increment(buf.as_ref().len() as u64);
                 }
             }
 
@@ -172,6 +200,8 @@ where
                     let (n, addr) = recv.recv_datagram(buf.as_mut()).await?;
                     buf.set_len(n);
                     socket.send(&mut buf, addr).await?;
+                    metrics::counter!(UDP_PACKETS, "direction" => "down").increment(1);
+                    metrics::counter!(UDP_BYTES, "direction" => "down").increment(n as u64);
                 }
             }
 

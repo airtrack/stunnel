@@ -4,3 +4,8 @@ cert = "stunnel_cert.pem"
 
 # quic config, server_type is "quic" or "s2n-quic"
 # quic = { server_type = "s2n-quic", cc = "bbr|fixed", loss_threshold = 20, fixed_bandwidth = 6000000 }
+
+# metrics: counters, gauges and histograms over OTLP/HTTP. Without `otel`, or
+# with an empty endpoint, nothing is exported. `service_name` defaults to
+# stunnel-server.
+otel = { endpoint = "http://10.0.0.36:4318", service_name = "stunnel-server", export_interval_secs = 15 }
