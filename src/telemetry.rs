@@ -7,10 +7,21 @@
 //! `OTEL_EXPORTER_OTLP_ENDPOINT`) nothing is built at all: every `metrics` call
 //! in the crate then records into the facade's built-in no-op recorder and no
 //! exporter thread exists.
+//!
+//! The resource carries `service.instance.id`, this device's outbound IP, so
+//! several devices reporting the same `service.name` stay separable in the
+//! ClickHouse tables. The IP is found from the default route, so a collector on
+//! loopback does not matter. When no route exists the id falls back to
+//! `unknown` and a warning is logged, so the tunnel still starts.
 
-use std::{collections::HashMap, io, time::Duration};
+use std::{
+    collections::HashMap,
+    io,
+    net::{IpAddr, UdpSocket},
+    time::Duration,
+};
 
-use log::info;
+use log::{info, warn};
 use metrics::KeyName;
 use metrics_exporter_otel::OpenTelemetryRecorder;
 use opentelemetry::KeyValue;
@@ -27,6 +38,18 @@ const OTEL_ENDPOINT_ENV: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 
 /// The instrumentation scope the recorder's meter is created under.
 const SCOPE_NAME: &str = "stunnel";
+
+/// Resource attribute that identifies one running process. Set to the device's
+/// outbound IP so several devices reporting the same service name stay
+/// separable, or `unknown` when no route can supply an address.
+const INSTANCE_ID_KEY: &str = "service.instance.id";
+
+/// Public address used only to ask the routing table which local address the
+/// default route uses. A connected UDP socket sends no packet.
+const ROUTE_PROBE: &str = "8.8.8.8:80";
+
+/// The instance id reported when the device IP cannot be determined.
+const UNKNOWN_INSTANCE: &str = "unknown";
 
 /// Bound on one export request, so a wedged collector cannot pin the reader's
 /// thread indefinitely.
@@ -55,6 +78,11 @@ pub struct OtelConfig {
     /// and the server default to distinct names so one dashboard can show
     /// either end.
     pub service_name: String,
+    /// The `service.instance.id` resource attribute. Unset (or empty) means
+    /// this device's outbound IP; set it explicitly when the host has several
+    /// addresses and the default route's one is not the device's identity.
+    #[serde(default)]
+    pub instance_id: Option<String>,
     /// How often the metric reader exports.
     pub export_interval_secs: u64,
     /// Extra OTLP request headers, for a collector that wants auth.
@@ -68,6 +96,7 @@ impl Default for OtelConfig {
             protocol: OtelProtocol::HttpProto,
             metrics_path: "/v1/metrics".into(),
             service_name: "stunnel".into(),
+            instance_id: None,
             export_interval_secs: 15,
             headers: HashMap::new(),
         }
@@ -94,6 +123,13 @@ impl OtelConfig {
                 .ok()
                 .filter(|value| !value.is_empty()),
         }
+    }
+
+    /// The `service.instance.id` to report: the configured value, or the
+    /// device's outbound IP. Never fails: an undetectable IP becomes `unknown`
+    /// with a warning, so metrics work and the process still starts.
+    pub fn resolved_instance_id(&self) -> String {
+        resolve_instance_id(self.instance_id.as_deref(), device_ip)
     }
 }
 
@@ -128,10 +164,12 @@ impl Telemetry {
         };
         let url = signal_url(&endpoint, &config.metrics_path);
         let interval = config.export_interval_secs.max(1);
+        let instance_id = config.resolved_instance_id();
 
         let resource = Resource::builder()
             .with_service_name(config.service_name.clone())
             .with_attribute(KeyValue::new("service.version", version.to_string()))
+            .with_attribute(KeyValue::new(INSTANCE_ID_KEY, instance_id.clone()))
             .build();
         let exporter = opentelemetry_otlp::MetricExporter::builder()
             .with_http()
@@ -164,8 +202,8 @@ impl Telemetry {
         describe_metrics();
 
         info!(
-            "OTel metrics: {} (service {}, every {}s)",
-            url, config.service_name, interval
+            "OTel metrics: {} (service {}, instance {}, every {}s)",
+            url, config.service_name, instance_id, interval
         );
         Ok(Some(Self { _meter: provider }))
     }
@@ -181,6 +219,45 @@ fn signal_url(endpoint: &str, path: &str) -> String {
         true => endpoint.to_string(),
         false => format!("{endpoint}/{path}"),
     }
+}
+
+/// Pick the instance id: an explicit non-empty value wins, otherwise the
+/// detected address, otherwise `unknown`. `detect` is a parameter so the
+/// fallback is testable without depending on the host's routes.
+fn resolve_instance_id(
+    configured: Option<&str>,
+    detect: impl FnOnce() -> io::Result<IpAddr>,
+) -> String {
+    match configured.map(str::trim) {
+        Some(instance_id) if !instance_id.is_empty() => instance_id.to_string(),
+        _ => match detect() {
+            Ok(ip) => ip.to_string(),
+            Err(error) => {
+                warn!(
+                    "OTel metrics: cannot determine the device IP ({error}), \
+                     using {UNKNOWN_INSTANCE} for {INSTANCE_ID_KEY}"
+                );
+                UNKNOWN_INSTANCE.to_string()
+            }
+        },
+    }
+}
+
+/// The device's outbound IP: the local address the default route would use.
+/// A connected UDP socket sends nothing -- `connect` only asks the routing
+/// table. If the address is loopback (a host with no real egress), that is not
+/// a usable device identity, so it is treated as a failure.
+fn device_ip() -> io::Result<IpAddr> {
+    let socket = UdpSocket::bind("0.0.0.0:0")?;
+    socket.connect(ROUTE_PROBE)?;
+    let ip = socket.local_addr()?.ip();
+    if ip.is_loopback() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "the default route has no non-loopback address",
+        ));
+    }
+    Ok(ip)
 }
 
 fn protocol(protocol: OtelProtocol) -> Protocol {
@@ -263,6 +340,26 @@ mod tests {
     }
 
     #[test]
+    fn a_configured_instance_id_wins_over_the_device_ip() {
+        let config: OtelConfig = toml::from_str("instance_id = \"10.0.0.80\"").unwrap();
+        assert_eq!(config.resolved_instance_id(), "10.0.0.80");
+    }
+
+    #[test]
+    fn detection_falls_back_to_unknown_instead_of_failing() {
+        let detected: IpAddr = "10.0.0.80".parse().unwrap();
+        assert_eq!(resolve_instance_id(None, || Ok(detected)), "10.0.0.80");
+        assert_eq!(
+            resolve_instance_id(Some("  "), || Err(io::Error::other("no route"))),
+            UNKNOWN_INSTANCE
+        );
+        assert_eq!(
+            resolve_instance_id(None, || Err(io::Error::other("no route"))),
+            UNKNOWN_INSTANCE
+        );
+    }
+
+    #[test]
     fn protocol_maps_to_the_otlp_protocol() {
         assert!(matches!(
             protocol(OtelProtocol::HttpJson),
@@ -281,6 +378,7 @@ mod tests {
         assert_eq!(wrapper.otel.protocol, OtelProtocol::HttpProto);
         assert_eq!(wrapper.otel.metrics_path, "/v1/metrics");
         assert_eq!(wrapper.otel.service_name, "stunnel");
+        assert_eq!(wrapper.otel.instance_id, None);
         assert_eq!(wrapper.otel.export_interval_secs, 15);
     }
 
@@ -288,8 +386,8 @@ mod tests {
     fn the_otel_block_parses_and_its_typos_fail_fast() {
         let wrapper: Wrapper = toml::from_str(
             "otel = { endpoint = \"http://10.0.0.36:4318/\", protocol = \"http-json\", \
-             service_name = \"stunnel-mock\", export_interval_secs = 5, \
-             headers = { authorization = \"Bearer x\" } }",
+             service_name = \"stunnel-mock\", instance_id = \"10.0.0.80\", \
+             export_interval_secs = 5, headers = { authorization = \"Bearer x\" } }",
         )
         .unwrap();
         assert_eq!(
@@ -298,6 +396,7 @@ mod tests {
         );
         assert!(matches!(wrapper.otel.protocol, OtelProtocol::HttpJson));
         assert_eq!(wrapper.otel.service_name, "stunnel-mock");
+        assert_eq!(wrapper.otel.instance_id.as_deref(), Some("10.0.0.80"));
         assert_eq!(wrapper.otel.export_interval_secs, 5);
         assert_eq!(
             wrapper

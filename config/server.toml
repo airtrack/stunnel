@@ -7,5 +7,9 @@ cert = "stunnel_cert.pem"
 
 # metrics: counters, gauges and histograms over OTLP/HTTP. Without `otel`, or
 # with an empty endpoint, nothing is exported. `service_name` defaults to
-# stunnel-server.
+# stunnel-server. `service.instance.id` is the device's outbound IP (the source
+# address for the default route); uncomment `instance_id` to override it (for
+# example in a container whose IP is not the device's IP).
 otel = { endpoint = "http://10.0.0.36:4318", service_name = "stunnel-server", export_interval_secs = 15 }
+# otel = { endpoint = "http://10.0.0.36:4318", service_name = "stunnel-server",
+#          instance_id = "10.0.0.36", export_interval_secs = 15 }
